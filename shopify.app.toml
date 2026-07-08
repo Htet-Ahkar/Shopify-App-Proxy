@@ -2,7 +2,7 @@
 
 client_id = "9a07a6ae869c7d911e43b2c94300808f"
 name = "App Proxy"
-application_url = "https://shopify-app-proxy-htetahkars-projects.vercel.app/"
+application_url = "https://shopify-app-proxy-htetahkars-projects.vercel.app"
 embedded = true
 
 [build]
@@ -24,7 +24,7 @@ api_version = "2026-07"
 scopes = "write_app_proxy,write_metaobject_definitions,write_metaobjects,write_products"
 
 [auth]
-redirect_urls = [ "https://shopify-app-proxy-htetahkars-projects.vercel.app/api/auth" ]
+redirect_urls = [ "https://shopify-app-proxy-htetahkars-projects.vercel.app/auth/callback" ]
 
 [product.metafields.app.demo_info]
 type = "single_line_text_field"
@@ -51,6 +51,6 @@ name = "Description"
 type = "multi_line_text_field"
 
 [app_proxy]
-url = "https://cocooriginalmm.com"
+url = "https://shopify-app-proxy-htetahkars-projects.vercel.app"
 subpath = "proxy"
 prefix = "apps"
