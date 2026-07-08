@@ -33,7 +33,21 @@ function json(data: unknown, init?: ResponseInit) {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.public.appProxy(request);
+  try {
+    await authenticate.public.appProxy(request);
+  } catch (error) {
+    if (error instanceof Response) {
+      return json(
+        {
+          ok: false,
+          error: "App proxy request could not be verified by Shopify.",
+        },
+        { status: error.status || 400 },
+      );
+    }
+
+    throw error;
+  }
 
   const externalApiUrl = process.env.EXTERNAL_API_URL;
   if (!externalApiUrl) {
@@ -51,9 +65,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       method: "GET",
       headers: {
         Accept: "application/json",
-        ...(process.env.EXTERNAL_API_KEY
-          ? { "x-api-key": process.env.EXTERNAL_API_KEY }
-          : {}),
       },
       signal: controller.signal,
     });
