@@ -51,6 +51,6 @@ name = "Description"
 type = "multi_line_text_field"
 
 [app_proxy]
-url = "https://shopify-app-proxy-htetahkars-projects.vercel.app"
+url = "https://shopify-app-proxy-htetahkars-projects.vercel.app/external-api"
 subpath = "proxy"
 prefix = "apps"
