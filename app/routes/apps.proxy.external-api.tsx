@@ -32,21 +32,32 @@ function json(data: unknown, init?: ResponseInit) {
   });
 }
 
+function getErrorStatus(error: unknown) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "status" in error &&
+    typeof error.status === "number"
+  ) {
+    return error.status;
+  }
+
+  return 400;
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
     await authenticate.public.appProxy(request);
   } catch (error) {
-    if (error instanceof Response) {
-      return json(
-        {
-          ok: false,
-          error: "App proxy request could not be verified by Shopify.",
-        },
-        { status: error.status || 400 },
-      );
-    }
+    console.error("App proxy authentication failed", error);
 
-    throw error;
+    return json(
+      {
+        ok: false,
+        error: "App proxy request could not be verified by Shopify.",
+      },
+      { status: getErrorStatus(error) },
+    );
   }
 
   const externalApiUrl = process.env.EXTERNAL_API_URL;
