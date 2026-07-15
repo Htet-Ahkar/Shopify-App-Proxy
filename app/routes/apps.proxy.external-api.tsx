@@ -46,10 +46,47 @@ function getErrorStatus(error: unknown) {
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const url = new URL(request.url);
+  const proxyRequestInfo = {
+    method: request.method,
+    pathname: url.pathname,
+    shop: url.searchParams.get("shop"),
+    pathPrefix: url.searchParams.get("path_prefix"),
+    timestamp: url.searchParams.get("timestamp"),
+    hasLoggedInCustomer: Boolean(
+      url.searchParams.get("logged_in_customer_id"),
+    ),
+    hasSignature: url.searchParams.has("signature"),
+  };
+
+  console.log("[app-proxy] Request received", proxyRequestInfo);
+
   try {
-    await authenticate.public.appProxy(request);
+    const authContext = await authenticate.public.appProxy(request);
+
+    console.log("[app-proxy] Authentication successful", {
+      shop: authContext.session?.shop ?? proxyRequestInfo.shop,
+      hasSession: Boolean(authContext.session),
+      hasAdminClient: Boolean(authContext.admin),
+      hasStorefrontClient: Boolean(authContext.storefront),
+      hasLiquidHelper: Boolean(authContext.liquid),
+    });
   } catch (error) {
-    console.error("App proxy authentication failed", error);
+    console.error("[app-proxy] Authentication failed", {
+      ...proxyRequestInfo,
+      error:
+        error instanceof Response
+          ? {
+              status: error.status,
+              statusText: error.statusText,
+            }
+          : error instanceof Error
+            ? {
+                name: error.name,
+                message: error.message,
+              }
+            : String(error),
+    });
 
     return json(
       {
