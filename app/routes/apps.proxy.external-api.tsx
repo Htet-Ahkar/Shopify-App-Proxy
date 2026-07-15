@@ -53,9 +53,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shop: url.searchParams.get("shop"),
     pathPrefix: url.searchParams.get("path_prefix"),
     timestamp: url.searchParams.get("timestamp"),
-    hasLoggedInCustomer: Boolean(
-      url.searchParams.get("logged_in_customer_id"),
-    ),
+    hasLoggedInCustomer: Boolean(url.searchParams.get("logged_in_customer_id")),
     hasSignature: url.searchParams.has("signature"),
   };
 
@@ -92,6 +90,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       {
         ok: false,
         error: "App proxy request could not be verified by Shopify.",
+        proxyRequestInfo,
       },
       { status: getErrorStatus(error) },
     );
