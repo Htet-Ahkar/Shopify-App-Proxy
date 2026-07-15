@@ -90,7 +90,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       {
         ok: false,
         error: "App proxy request could not be verified by Shopify.",
-        proxyRequestInfo,
+        request,
       },
       { status: getErrorStatus(error) },
     );
