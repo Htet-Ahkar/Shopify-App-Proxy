@@ -4,6 +4,10 @@
 
 This repository is the Shopify app companion for the COCO ORIGINAL Shopify theme.
 
+This app is for COCO ORIGINAL, not GG Fest. Do not use GG Fest project context or configuration for this app.
+
+COCO ORIGINAL requires a different Shopify account from GG Fest. Treat Shopify MCP and Shopify plugin logins as separate authentication contexts; do not assume signing in to one signs in to the other. Before accessing store data or making remote changes, verify that the relevant connection targets the COCO ORIGINAL account and store. Do not reuse a GG Fest login for this project. Developer documentation access alone does not confirm an authenticated store connection.
+
 Related theme project:
 
 - `../../coco-original`
@@ -24,6 +28,9 @@ Key paths:
 - `app/routes/app.tsx` is the embedded Shopify Admin app shell.
 - `app/routes/app._index.tsx` is the current admin home/demo route.
 - `app/routes/app.additional.tsx` is a template additional admin page.
+- `app/routes/apps.proxy.external-api.tsx` implements the signed external API POC loader and its app-host route alias.
+- `app/routes/external-api.tsx` re-exports that loader at the configured proxy target.
+- `app/routes/external-api-test.tsx` is an unauthenticated diagnostic endpoint calling the same configured upstream.
 - `app/shopify.server.ts` configures Shopify auth/API helpers.
 - `app/db.server.ts` configures Prisma.
 - `prisma/schema.prisma` defines session storage.
@@ -36,7 +43,11 @@ Current behavior observed:
 - Admin routes authenticate with `authenticate.admin(request)`.
 - The home route still contains Shopify template demo behavior for creating products, metafields, and metaobjects.
 - Webhook handlers exist for `app/uninstalled` and `app/scopes_update`.
-- Prisma stores Shopify sessions in a local SQLite database in development.
+- Prisma stores Shopify sessions in `prisma/dev.sqlite`; no production datasource override is configured in the schema.
+- The proxy POC fetches `EXTERNAL_API_URL` with a five-second timeout and returns selected todo fields. It currently sends no provider credential.
+- The theme has a proxy test section, but its browser-only custom checkout mock is not connected to this app.
+
+Project setup is documented in `README.md`; current endpoint contracts, limitations, and manual verification scenarios are in `docs/architecture.md`.
 
 ## Theme Relationship
 
@@ -50,14 +61,16 @@ The intended relationship is:
 Typical flow:
 
 ```text
-Shopify theme -> /apps/... storefront app proxy -> this app -> external API -> this app -> theme
+Theme GET /apps/proxy -> Shopify app proxy -> App /external-api -> Shopify signature verification -> GET EXTERNAL_API_URL -> Selected JSON fields returned to theme
 ```
 
 Important:
 
-- Despite the project name, no storefront app proxy route or `[app_proxy]` config was found yet.
-- Do not assume `/apps/...` endpoints exist until both Shopify app proxy configuration and matching public routes are added.
-- When implementing app proxy routes, verify Shopify app proxy signatures before trusting request data.
+- `[app_proxy]` is configured with prefix `apps`, subpath `proxy`, and an app-host target ending in `/external-api`.
+- `/apps/proxy/external-api` is also an app-host alias for the signed loader; it is not the configured storefront entrypoint. The theme test section displays that misleading path but actually fetches `/apps/proxy`.
+- The signed loader verifies requests using `authenticate.public.appProxy(request)` before calling the upstream. Signature verification does not establish customer ownership of checkout resources.
+- `/external-api-test` performs no Shopify authentication. Remove or protect this diagnostic bypass before connecting a credentialed provider.
+- Confirm the installed store's active proxy configuration before assuming storefront routing is live.
 - Keep external API secrets in the app host environment, never in theme files or storefront-visible settings.
 
 ## Deployment Relationship
@@ -66,6 +79,8 @@ The theme and app deploy separately:
 
 - The theme deploys to Shopify Online Store.
 - This app deploys to an app host such as Vercel.
+
+`shopify.app.toml` currently points app, callback, and proxy URLs at a Vercel host. These are repository configuration values; deployment health and durable production session storage remain unverified. Shopify CLI app deployment and app-server hosting are separate.
 
 If this app is later moved inside the theme repository, prefer a monorepo-style path such as:
 
@@ -80,6 +95,10 @@ In that layout, configure Vercel's root directory to the app subdirectory (`apps
 ## External API Role
 
 The main expected purpose for this app is calling external APIs that the theme cannot safely call directly.
+
+Themes can call public external APIs when browser access is permitted. This app is needed for calls requiring private credentials. The current POC only uses `EXTERNAL_API_URL`; provider choice, provider authentication, and real checkout operations remain pending.
+
+Before live integration, define checkout validation and customer authorization, add abuse controls, replace POC diagnostics with safe errors/redacted logs, and establish durable production session storage. The current authentication-error payload includes request metadata, and the theme test section logs complete responses; do not extend these diagnostics to real checkout data.
 
 Rules:
 
