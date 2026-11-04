@@ -30,7 +30,7 @@ Key paths:
 - `app/routes/app.additional.tsx` is a template additional admin page.
 - `app/routes/apps.proxy.external-api.tsx` implements the signed external API POC loader and its app-host route alias.
 - `app/routes/external-api.tsx` re-exports that loader at the configured proxy target.
-- `app/routes/external-api-test.tsx` is an unauthenticated diagnostic endpoint calling the same configured upstream.
+- `app/routes/external-api-test.tsx` re-exports the signed loader and requires Shopify proxy verification; it is no longer an unauthenticated diagnostic bypass.
 - `app/shopify.server.ts` configures Shopify auth/API helpers.
 - `app/db.server.ts` configures Prisma.
 - `prisma/schema.prisma` defines session storage.
@@ -43,8 +43,8 @@ Current behavior observed:
 - Admin routes authenticate with `authenticate.admin(request)`.
 - The home route still contains Shopify template demo behavior for creating products, metafields, and metaobjects.
 - Webhook handlers exist for `app/uninstalled` and `app/scopes_update`.
-- Prisma stores Shopify sessions in `prisma/dev.sqlite`; no production datasource override is configured in the schema.
-- The proxy POC fetches `EXTERNAL_API_URL` with a five-second timeout and returns selected todo fields. It currently sends no provider credential.
+- Prisma stores Shopify sessions in Supabase PostgreSQL using server-only `DATABASE_URL` and `DIRECT_URL`, inside the private `shopify` schema. The old SQLite schema/migrations are archived under `prisma/sqlite-archive`.
+- The proxy POC fetches `EXTERNAL_API_URL` with a five-second timeout and returns selected todo fields. It sends server-only `EXTERNAL_API_SECRET` as `x-api-key` to the fixed HTTPS upstream, with redirects disabled.
 - The theme has a proxy test section, but its browser-only custom checkout mock is not connected to this app.
 
 Project setup is documented in `README.md`; current endpoint contracts, limitations, and manual verification scenarios are in `docs/architecture.md`.
@@ -69,7 +69,7 @@ Important:
 - `[app_proxy]` is configured with prefix `apps`, subpath `proxy`, and an app-host target ending in `/external-api`.
 - `/apps/proxy/external-api` is also an app-host alias for the signed loader; it is not the configured storefront entrypoint. The theme test section displays that misleading path but actually fetches `/apps/proxy`.
 - The signed loader verifies requests using `authenticate.public.appProxy(request)` before calling the upstream. Signature verification does not establish customer ownership of checkout resources.
-- `/external-api-test` performs no Shopify authentication. Remove or protect this diagnostic bypass before connecting a credentialed provider.
+- `/external-api-test` requires the same Shopify authentication as `/external-api`; do not reintroduce an unauthenticated bypass.
 - Confirm the installed store's active proxy configuration before assuming storefront routing is live.
 - Keep external API secrets in the app host environment, never in theme files or storefront-visible settings.
 
@@ -96,9 +96,9 @@ In that layout, configure Vercel's root directory to the app subdirectory (`apps
 
 The main expected purpose for this app is calling external APIs that the theme cannot safely call directly.
 
-Themes can call public external APIs when browser access is permitted. This app is needed for calls requiring private credentials. The current POC only uses `EXTERNAL_API_URL`; provider choice, provider authentication, and real checkout operations remain pending.
+Themes can call public external APIs when browser access is permitted. This app is needed for calls requiring private credentials. The POC uses `EXTERNAL_API_URL` and server-only `EXTERNAL_API_SECRET` to call a separate, API-key-protected Supabase Edge Function. The mock function has no database or payment operations. Real payment provider choice and checkout operations remain pending.
 
-Before live integration, define checkout validation and customer authorization, add abuse controls, replace POC diagnostics with safe errors/redacted logs, and establish durable production session storage. The current authentication-error payload includes request metadata, and the theme test section logs complete responses; do not extend these diagnostics to real checkout data.
+Before live integration, define checkout validation and customer authorization, add abuse controls, replace POC diagnostics with safe errors/redacted logs, and establish durable production session storage. The proxy now returns safe authentication/storage errors. The theme test section still logs complete responses; do not extend these diagnostics to real checkout data.
 
 Rules:
 
@@ -135,3 +135,7 @@ Do not run the dev server unless explicitly needed. If a server is started, term
 - Use Context7 MCP before implementing features with external libraries, frameworks, SDKs, APIs, CLIs, or cloud services.
 - For Shopify behavior, prefer official Shopify documentation through Context7 or Shopify Dev MCP.
 - For Vercel deployment behavior, check current Vercel documentation before making deployment changes.
+
+## Agent tooling handoff
+
+See [docs/agent-setup.md](docs/agent-setup.md) for required plugins, MCP servers, skills, account targets, dependencies, configuration, and secure setup instructions. Keep this guide current when tooling changes.

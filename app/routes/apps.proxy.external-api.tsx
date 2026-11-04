@@ -9,6 +9,7 @@ type TodoResponse = {
   id?: unknown;
   title?: unknown;
   completed?: unknown;
+  authenticated?: unknown;
 };
 
 function sanitizeTodo(data: TodoResponse) {
@@ -18,6 +19,7 @@ function sanitizeTodo(data: TodoResponse) {
     id: typeof data.id === "number" ? data.id : null,
     title: typeof data.title === "string" ? data.title : "",
     completed: typeof data.completed === "boolean" ? data.completed : false,
+    apiAuthenticated: data.authenticated === true,
   };
 }
 
@@ -42,7 +44,7 @@ function getErrorStatus(error: unknown) {
     return error.status;
   }
 
-  return 400;
+  return 500;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -86,14 +88,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             : String(error),
     });
 
+    const status = getErrorStatus(error);
+    const isClientError = status >= 400 && status < 500;
     return json(
       {
         ok: false,
-        error: "App proxy request could not be verified by Shopify.",
-        request,
-        proxyRequestInfo,
+        error: isClientError
+          ? "App proxy request could not be verified by Shopify."
+          : "App proxy session storage is unavailable.",
       },
-      { status: getErrorStatus(error) },
+      { status },
     );
   }
 
@@ -101,6 +105,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!externalApiUrl) {
     return json(
       { ok: false, error: "External API URL is not configured." },
+      { status: 500 },
+    );
+  }
+
+  const externalApiSecret = process.env.EXTERNAL_API_SECRET;
+  if (!externalApiSecret) {
+    return json(
+      { ok: false, error: "External API secret is not configured." },
+      { status: 500 },
+    );
+  }
+
+  try {
+    if (new URL(externalApiUrl).protocol !== "https:") {
+      throw new Error("HTTPS required");
+    }
+  } catch {
+    return json(
+      { ok: false, error: "External API URL must use HTTPS." },
       { status: 500 },
     );
   }
@@ -113,8 +136,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       method: "GET",
       headers: {
         Accept: "application/json",
+        "x-api-key": externalApiSecret,
       },
       signal: controller.signal,
+      redirect: "error",
     });
 
     if (!response.ok) {

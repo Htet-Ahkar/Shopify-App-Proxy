@@ -1,0 +1,5 @@
+project_id = "jsiqibwdsvvhwhlvhisj"
+
+# This function authenticates x-api-key itself. It does not accept browser JWTs.
+[functions.mock-external-api]
+verify_jwt = false
