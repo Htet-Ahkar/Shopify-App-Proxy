@@ -117,3 +117,7 @@ The mock must not create real Shopify orders, call real payment gateways, transm
 The official Shopify references above were checked through Context7. Code-specific descriptions reflect the repository POC, including its limitations.
 
 The API-key POC setup and current response field `apiAuthenticated` are documented in [authenticated-poc.md](authenticated-poc.md).
+
+## Connected mock checkout
+
+The authenticated read-only POC remains available independently. The new connected mock checkout is implemented behind explicit server/theme feature flags and uses private Prisma records, a separately authenticated mock provider, signed callbacks, and reconciliation. See [mock-checkout.md](mock-checkout.md) for the complete contract, environment names, preview setup, customer journey, limitations, tests, and rollout. Source implementation does not establish deployment or end-to-end browser verification.

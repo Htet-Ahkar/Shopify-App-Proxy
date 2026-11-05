@@ -139,3 +139,18 @@ Do not run the dev server unless explicitly needed. If a server is started, term
 ## Agent tooling handoff
 
 See [docs/agent-setup.md](docs/agent-setup.md) for required plugins, MCP servers, skills, account targets, dependencies, configuration, and secure setup instructions. Keep this guide current when tooling changes.
+
+## Connected mock checkout (current implementation)
+
+This section supersedes earlier statements that checkout is browser-only/not connected. See [docs/mock-checkout.md](docs/mock-checkout.md) for API contracts, lifecycle, preview isolation, migration, configuration, verification, and rollback. New code remains disabled unless `MOCK_CHECKOUT_ENABLED=true` and the configured COCO shop matches.
+
+- `app/routes/external-api.mock-checkout.tsx`: signed storefront quote/create/status/retry/cancel/simulate endpoint.
+- `app/lib/mock-checkout*.server.ts` and `mock-payment-provider.server.ts`: catalog pricing, ownership, transactions, provider requests, evidence validation, and reconciliation.
+- `app/routes/webhooks.mock-payments.tsx`: independently HMAC-authenticated mock provider callback.
+- `app/routes/internal.mock-payments-sweep.tsx`: bearer-authenticated scheduled reconciliation/cleanup.
+- Prisma models/migration hold private mock records; `coco_mock_provider` is a separate private schema for the API-key-authenticated Supabase `mock-payments` function and durable callback outbox.
+- Read `../../GG-Payment-Server` for backend patterns and `../../gg-gaming-fest` for UX only. Do not change either reference project or use their secrets/accounts.
+- Keep all payment activity simulated; no Shopify writes, real gateway calls, wallet credentials, email, or fulfillment. Never log delivery details, capabilities, raw callbacks, or secrets.
+- Required tooling: Shopify skill and developer MCP/Theme Check for theme/API validation; Context7 MCP for current official API/library docs; Supabase skill and Postgres best-practices skill before schema/RLS/Edge Function work; Supabase MCP/CLI for isolated preview configuration; Vercel environment/functions/deployment skills and Vercel MCP/CLI when configuring hosting. Browser MCP is required for mobile/desktop acceptance against preview. Tool purposes, dependencies, account verification, setup URLs, and secret configuration are in [docs/agent-setup.md](docs/agent-setup.md) and the mock checkout runbook.
+- Node/npm and existing Prisma/React Router dependencies remain unchanged. Deno/Supabase CLI are required to check/deploy the Edge Function; its Postgres.js and QR dependencies are version-pinned in imports.
+- Do not run `vercel-build`, `setup`, migrations, cron installation, or deployment against an unverified/shared database. Production and preview secrets/databases must be separate.

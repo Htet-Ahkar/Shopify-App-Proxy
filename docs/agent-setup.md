@@ -114,3 +114,11 @@ key returns 200; Shopify `/apps/proxy` returns `ok: true` and
 `apiAuthenticated: true`; direct unsigned app-host proxy routes return 400.
 Neither browser responses nor client assets may contain the key. These checks
 use synthetic data and must not create orders or payments.
+
+## Connected checkout tooling
+
+Read [mock-checkout.md](mock-checkout.md) before enabling the feature. Required dependencies are the existing Node/npm/Prisma stack plus Deno and Supabase CLI for Edge Function checks/deployment. The function pins Postgres.js 3.4.7 and QRCode 1.5.4. Required skills: Shopify, Supabase, Supabase Postgres best practices, and Vercel environment/functions/deployment guidance when hosting changes are needed. Context7 provides current official documentation (`https://mcp.context7.com/mcp`); Shopify developer MCP/Theme Check validates Liquid/API code; Supabase MCP/CLI configures the isolated preview database, function, Vault and cron; Vercel MCP/CLI configures app hosting and private preview variables. Browser MCP verifies mobile/desktop customer journeys against preview. Install/authenticate each plugin separately using the existing setup sections and verify the COCO account before remote operations. GG projects are read-only references, not runtime dependencies. No payment-provider plugin or live KBZPay account is needed for this mock.
+
+New private configuration names: `MOCK_CHECKOUT_ENABLED`, `MOCK_CHECKOUT_SHOP`, `MOCK_PAYMENT_PROVIDER_URL`, `MOCK_PAYMENT_PROVIDER_KEY`, `MOCK_PAYMENT_CALLBACK_SECRET`, `MOCK_PAYMENT_SWEEP_SECRET`; Edge Function additionally needs `MOCK_PROVIDER_DATABASE_URL` and `MOCK_PAYMENT_CALLBACK_URL`. Blank templates are committed in the app root and function directory; values belong in private host/function secret stores. Configure Vault with the sweep URL/secret and install the provided cron script only in isolated preview. Both app database URLs must point to that same isolated database. Do not run a dev server automatically.
+
+Reproducible checkout test tooling is installed with `npm ci`: pinned PGlite 0.3.14 executes the PostgreSQL migration/privilege checks, and jsdom 26.1.0 runs DOM customer journeys without a development server. See [verification evidence](mock-checkout-verification.md) for remaining browser/preview requirements.

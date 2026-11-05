@@ -33,3 +33,68 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model MockQuote {
+  id             String   @id @default(uuid())
+  shop           String
+  capabilityHash String
+  customerId     String?
+  snapshot       Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+  checkout       MockCheckout?
+
+  @@index([createdAt])
+}
+
+model MockCheckout {
+  id             String   @id @default(uuid())
+  reference      String   @unique
+  quoteId        String   @unique
+  quote          MockQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  shop           String
+  capabilityHash String
+  customerId     String?
+  snapshot       Json
+  delivery       Json
+  status         String   @default("pending")
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+  attempts       MockPaymentAttempt[]
+
+  @@index([status, createdAt])
+}
+
+model MockPaymentAttempt {
+  id                   String   @id @default(uuid())
+  checkoutId           String
+  checkout             MockCheckout @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+  idempotencyKey       String   @unique
+  requestHash          String
+  sequence             Int      @default(1)
+  method               String
+  environment          String   @default("simulation")
+  initializationStatus String   @default("initializing")
+  status               String   @default("pending")
+  providerId           String?  @unique
+  instructions         Json?
+  amount               String
+  currency             String
+  createdAt            DateTime @default(now())
+  nextReconcileAt      DateTime @default(now())
+  expiresAt            DateTime
+  events               MockPaymentEvent[]
+
+  @@index([checkoutId, createdAt])
+  @@unique([checkoutId, sequence])
+  @@index([status, createdAt])
+  @@index([status, nextReconcileAt])
+}
+
+model MockPaymentEvent {
+  id        String   @id
+  attemptId String
+  attempt   MockPaymentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  status    String
+  createdAt DateTime @default(now())
+}
