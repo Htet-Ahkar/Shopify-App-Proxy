@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type MockPaymentAttempt } from "@prisma/client";
 import prisma from "../db.server";
-import { capabilityHash, CheckoutError, decimal, delivery, hash, identifier, lines, method, money, owned, TERMINAL, type Snapshot } from "./mock-checkout-domain.server";
-import { sampleInstructions, isSampleAttempt } from "./mock-payment-sample.server";
+import { capabilityHash, CheckoutError, decimal, delivery, hash, identifier, lines, method, money, owned, TERMINAL, type PaymentStatus, type Snapshot } from "./mock-checkout-domain.server";
+import { configuration, gatewayOf, initialize, query, close, notification, flatten, type Evidence } from "./kbzpay.server";
 
 type Owner = { shop: string; customerId: string | null; capabilityHash: string };
 type Graphql = (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
@@ -45,27 +45,51 @@ async function findCheckout(id: string, owner: Owner) {
   return record;
 }
 
+async function transition(id: string, evidence: PaymentStatus | Evidence) {
+  const { status, transactionId } = typeof evidence === "string" ? { status: evidence, transactionId: undefined } : evidence;
+  if (status === "pending") return;
+  await atomic(async tx => {
+    const attempt = await tx.mockPaymentAttempt.findUniqueOrThrow({ where: { id } });
+    if (transactionId && attempt.gatewayTransactionId && transactionId !== attempt.gatewayTransactionId) throw new CheckoutError("payment_evidence_mismatch", 422);
+    if (attempt.status === status || (terminal(attempt.status) && status !== "succeeded")) return;
+    // Success is authoritative even if a signed notification arrives after closure/expiry.
+    await tx.mockPaymentAttempt.update({ where: { id }, data: { status, ...(transactionId ? { gatewayTransactionId: transactionId } : {}) } });
+    const eventId = `${id}:${status}`;
+    if (!await tx.mockPaymentEvent.findUnique({ where: { id: eventId } })) await tx.mockPaymentEvent.create({ data: { id: eventId, attemptId: id, status } });
+    if (status === "succeeded") await tx.mockCheckout.update({ where: { id: attempt.checkoutId }, data: { status: "succeeded" } });
+  });
+}
+
 async function refreshAttempt(attempt: MockPaymentAttempt) {
-  if (terminal(attempt.status)) return false;
-  const status = attempt.expiresAt.getTime() <= Date.now() ? "expired" : !isSampleAttempt(attempt) ? "cancelled" : null;
-  if (!status) return false;
-  await prisma.mockPaymentAttempt.updateMany({ where: { id: attempt.id, status: "pending" }, data: { status } });
-  return true;
+  if (terminal(attempt.status)) return;
+  const gateway = gatewayOf(attempt.gateway);
+  if (!gateway) {
+    await transition(attempt.id, attempt.expiresAt.getTime() <= Date.now() ? "expired" : "cancelled");
+    return;
+  }
+  if (attempt.nextReconcileAt && attempt.nextReconcileAt.getTime() > Date.now()) return;
+  // Persist backoff before network I/O. A failed query leaves a recoverable pending attempt.
+  await prisma.mockPaymentAttempt.update({ where: { id: attempt.id }, data: { nextReconcileAt: new Date(Date.now() + 10000) } });
+  try {
+    const checkout = await prisma.mockCheckout.findUnique({ where: { id: attempt.checkoutId } });
+    await transition(attempt.id, checkout?.status === "succeeded" ? await close(gateway, attempt) : await query(gateway, attempt));
+  }
+  catch { /* Provider uncertainty never becomes success, failure, or retry permission. */ }
 }
 
 async function present(id: string, owner: Owner) {
   let record = await findCheckout(id, owner);
-  if (record.attempts[0] && await refreshAttempt(record.attempts[0])) record = await findCheckout(id, owner);
-  const attempt = record.attempts[0];
+  if (record.attempts[0]) { await refreshAttempt(record.attempts[0]); record = await findCheckout(id, owner); }
+  const attempt = (record.status === "succeeded" ? record.attempts.find(item => item.status === "succeeded") : null) ?? record.attempts[0];
   const expired = record.expiresAt.getTime() <= Date.now();
   const status = record.status === "succeeded" ? "succeeded" : attempt?.status ?? "pending";
   return {
-    mock: true, checkoutId: record.id, reference: record.reference,
+    mock: true, paymentEnvironment: attempt?.environment ?? "simulation", checkoutId: record.id, reference: record.reference,
     snapshot: record.snapshot, delivery: record.delivery, status,
     expiresAt: record.expiresAt.toISOString(), serverTime: new Date().toISOString(),
-    canRetry: !expired && ["failed", "cancelled"].includes(attempt?.status),
-    attempt: attempt ? { id: attempt.id, method: attempt.method, status: attempt.status, initializationStatus: attempt.initializationStatus, providerId: attempt.providerId,
-      instructions: !expired && attempt.status === "pending" && attempt.initializationStatus === "ready" && isSampleAttempt(attempt) ? attempt.instructions : null } : null,
+    canRetry: status !== "succeeded" && !expired && ["failed", "cancelled"].includes(attempt?.status),
+    attempt: attempt ? { id: attempt.id, method: attempt.method, status: attempt.status, initializationStatus: attempt.initializationStatus, providerId: attempt.providerId, transactionId: attempt.gatewayTransactionId,
+      instructions: !expired && status === "pending" && attempt.initializationStatus === "ready" && attempt.gateway ? attempt.instructions : null } : null,
   };
 }
 
@@ -82,6 +106,8 @@ async function claim(input: Record<string, unknown>, owner: Owner, retry: boolea
       if (existing.requestHash !== requestHash) throw new CheckoutError("idempotency_conflict", 409);
       return { attempt: existing, fresh: false };
     }
+    if (process.env.KBZPAY_ACCEPT_NEW_PAYMENTS === "false") throw new CheckoutError("payment_unavailable", 503);
+    const gateway = configuration();
     let checkout;
     if (retry) {
       checkout = await tx.mockCheckout.findUnique({ where: { id: sourceId }, include: { attempts: { orderBy: { sequence: "desc" }, take: 1 } } });
@@ -95,9 +121,11 @@ async function claim(input: Record<string, unknown>, owner: Owner, retry: boolea
       checkout = await tx.mockCheckout.create({ data: { ...owner, quoteId: quote.id, reference: `COCO-MOCK-${randomUUID().slice(0, 8).toUpperCase()}`, snapshot: jsonInput(quote.snapshot), delivery: jsonInput(normalizedDelivery), expiresAt: new Date(Date.now() + 15 * 60000) } });
     }
     const snapshot = checkout.snapshot as unknown as Snapshot;
+    // KBZPay accepts whole-minute payment windows only. Do not claim an unsendable retry.
+    if (gateway.mode === "uat" && checkout.expiresAt.getTime() - Date.now() < 60000) throw new CheckoutError("retry_unavailable", 409);
     const previous = await tx.mockPaymentAttempt.findFirst({ where: { checkoutId: checkout.id }, orderBy: { sequence: "desc" } });
     const attemptId = randomUUID();
-    const attempt = await tx.mockPaymentAttempt.create({ data: { id: attemptId, providerId: `SAMPLE-${attemptId}`, initializationStatus: "ready", instructions: sampleInstructions(selectedMethod, attemptId), checkoutId: checkout.id, idempotencyKey, requestHash, sequence: (previous?.sequence ?? 0) + 1, method: selectedMethod, amount: snapshot.amount, currency: snapshot.currency, expiresAt: checkout.expiresAt } });
+    const attempt = await tx.mockPaymentAttempt.create({ data: { id: attemptId, environment: gateway.mode, gateway: jsonInput(gateway), merchantOrderId: `COCO_${attemptId.replaceAll("-", "")}`, initializationStatus: "reconciliation_required", nextReconcileAt: new Date(Date.now() + 10000), checkoutId: checkout.id, idempotencyKey, requestHash, sequence: (previous?.sequence ?? 0) + 1, method: selectedMethod, amount: snapshot.amount, currency: snapshot.currency, expiresAt: checkout.expiresAt } });
     return { attempt, fresh: true };
   });
 }
@@ -117,6 +145,12 @@ export async function checkoutOperation(input: Record<string, unknown>, context:
   }
   if (operation === "create" || operation === "retry") {
     const result = await claim(input, owner, operation === "retry");
+    if (result.fresh) {
+      try {
+        const initialized = await initialize(gatewayOf(result.attempt.gateway)!, result.attempt);
+        await prisma.mockPaymentAttempt.updateMany({ where: { id: result.attempt.id }, data: { providerId: initialized.providerId, instructions: jsonInput(initialized.instructions), initializationStatus: "ready" } });
+      } catch { /* Keep the durable merchant reference; never repeat uncertain precreate. */ }
+    }
     return present(result.attempt.checkoutId, owner);
   }
   if (!["status", "cancel"].includes(String(operation))) throw new CheckoutError("invalid_operation");
@@ -131,20 +165,34 @@ export async function checkoutOperation(input: Record<string, unknown>, context:
   const attempt = checkout.attempts[0];
   if (!attempt) throw new CheckoutError("not_found", 404);
   if (operation === "cancel" && identifier(input.attemptId) !== attempt.id) throw new CheckoutError("attempt_unavailable", 409);
-  await refreshAttempt(attempt);
   if (operation === "cancel") {
-    await prisma.mockPaymentAttempt.updateMany({ where: { id: attempt.id, status: "pending", expiresAt: { gt: new Date() } }, data: { status: "cancelled" } });
-    await refreshAttempt(await prisma.mockPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id } }));
+    if (!terminal(attempt.status)) {
+      const gateway = gatewayOf(attempt.gateway);
+      if (!gateway) await refreshAttempt(attempt);
+      else {
+        // Initialization can still be in flight. Do not close/retry ahead of precreate.
+        if (attempt.initializationStatus !== "ready" && attempt.createdAt.getTime() + 10000 > Date.now()) throw new CheckoutError("payment_reconciling", 409);
+        try { await transition(attempt.id, await close(gateway, attempt)); }
+        catch { throw new CheckoutError("payment_reconciling", 409); }
+      }
+    }
   }
   return present(id, owner);
 }
 
-// Retain the protected scheduler endpoint for local expiry; no provider calls or deletion.
+// Bounded protected recovery. Never deletes payment history.
 export async function sweep() {
-  const pending = await prisma.mockPaymentAttempt.findMany({ where: { status: "pending", nextReconcileAt: { lte: new Date() } }, orderBy: { nextReconcileAt: "asc" }, take: 50 });
-  for (const attempt of pending) {
-    await refreshAttempt(attempt);
-    await prisma.mockPaymentAttempt.update({ where: { id: attempt.id }, data: { nextReconcileAt: new Date(Date.now() + 60000) } });
-  }
+  const pending = await prisma.mockPaymentAttempt.findMany({ where: { status: "pending", nextReconcileAt: { lte: new Date() } }, orderBy: { nextReconcileAt: "asc" }, take: 5 });
+  await Promise.all(pending.map(attempt => refreshAttempt(attempt)));
   return { mock: true, checked: pending.length };
+}
+
+export async function paymentNotification(input: unknown) {
+  const fields = flatten(input);
+  if (!fields.merch_order_id) throw new CheckoutError("invalid_payment_notification", 400);
+  const attempt = await prisma.mockPaymentAttempt.findUnique({ where: { merchantOrderId: fields.merch_order_id } });
+  if (!attempt) throw new CheckoutError("not_found", 404);
+  const gateway = gatewayOf(attempt.gateway);
+  if (!gateway || gateway.mode !== "uat") throw new CheckoutError("invalid_payment_signature", 401);
+  await transition(attempt.id, notification(input, gateway, attempt));
 }

@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 import ts from 'typescript';
-import { JSDOM } from 'jsdom';
+import { JSDOM, VirtualConsole } from 'jsdom';
 const themePath = process.env.COCO_THEME_PATH || path.resolve('../../coco-original');
 const themeRequire = createRequire(path.join(themePath, 'package.json'));
 const QRCode = themeRequire('qrcode');
@@ -13,7 +13,7 @@ const hasTheme = fs.existsSync(path.join(themePath, 'snippets/custom-checkout.li
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
 async function until(check) { for (let n = 0; n < 100; n++) { if (check()) return; await pause(); } assert.fail('Journey did not reach the expected state'); }
 const snapshot = { items: [{ title: 'COCO Tee / M', quantity: 2, total: '20000.00' }], amount: '20000.00', currency: 'MMK', shipping: '0.00', tax: '0.00' };
-function storefront({ empty = false, loseCreateResponse = false, storage, resumedRecord = null, disabled = false, sample = false, quoteFailure = false, qrRenderer } = {}) {
+function storefront({ empty = false, loseCreateResponse = false, storage, resumedRecord = null, disabled = false, sample = false, quoteFailure = false, qrRenderer, environment = 'simulation' } = {}) {
   const raw = fs.readFileSync(path.join(themePath, 'locales/en.default.json'), 'utf8');
   const translations = ts.parseConfigFileTextToJson('en.default.json', raw).config.mock_checkout;
   const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
@@ -21,7 +21,9 @@ function storefront({ empty = false, loseCreateResponse = false, storage, resume
   markup = markup.replace(/{% doc %}[\s\S]*?{% enddoc %}/g, '').replace(/{{\s*'mock_checkout\.([^']+)'\s*\|\s*t\s*\|\s*json\s*}}/g, (_, key) => JSON.stringify(translations[key]));
   markup = markup.replace(/{{\s*'mock_checkout\.([^']+)'\s*\|\s*t\s*}}/g, (_, key) => escape(translations[key]));
   markup = markup.replace(/{{\s*settings.mock_checkout_enabled\s*}}/g, disabled ? 'false' : 'true').replace(/{{\s*routes\.[^}]+}}/g, '/').replace(/{{[^}]+}}/g, '');
-  const dom = new JSDOM(`<!doctype html><html><body>${markup}</body></html>`, { url: sample ? 'http://127.0.0.1:9292/pages/checkout?view=checkout' : 'https://coco.test/pages/checkout', runScripts: 'outside-only', pretendToBeVisual: true });
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', error => { if (!error.message.includes('navigation')) throw error; });
+  const dom = new JSDOM(`<!doctype html><html><body>${markup}</body></html>`, { virtualConsole, url: sample ? 'http://127.0.0.1:9292/pages/checkout?view=checkout' : 'https://coco.test/pages/checkout', runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom;
   Object.defineProperty(window, 'crypto', { value: webcrypto });
   window.AbortSignal.timeout = () => new window.AbortController().signal;
@@ -41,7 +43,7 @@ function storefront({ empty = false, loseCreateResponse = false, storage, resume
     if (input.operation === 'quote') return Response.json({ mock: true, quoteId: randomUUID(), snapshot, expiresAt: new Date(Date.now() + 300000).toISOString() });
     if (input.operation === 'create' || input.operation === 'retry') {
       creates++;
-      record = { mock: true, checkoutId: record?.checkoutId || randomUUID(), reference: 'COCO-MOCK-TEST', snapshot, delivery: input.delivery || record.delivery, status: 'pending', canRetry: false, expiresAt: new Date(Date.now() + 900000).toISOString(), serverTime: new Date().toISOString(), attempt: { id: randomUUID(), providerId: 'MOCK-REFERENCE', method: input.method, status: 'pending', initializationStatus: 'ready' } };
+      record = { mock: true, paymentEnvironment: environment, checkoutId: record?.checkoutId || randomUUID(), reference: 'COCO-MOCK-TEST', snapshot, delivery: input.delivery || record.delivery, status: 'pending', canRetry: false, expiresAt: new Date(Date.now() + 900000).toISOString(), serverTime: new Date().toISOString(), attempt: { id: randomUUID(), providerId: 'MOCK-REFERENCE', method: input.method, status: 'pending', initializationStatus: 'ready' } };
       record.attempt.instructions = input.method === 'mmqr' ? { qrPayload: `COCO-SAMPLE-MMQR:NOT-PAYABLE:${record.attempt.id}` } : { pwaUrl: 'https://www.kbzpay.com/en' };
       if (loseCreateResponse) { loseCreateResponse = false; throw new TypeError('connection lost'); }
     } else if (input.operation === 'status') {
@@ -258,6 +260,47 @@ for (const url of ['http://www.kbzpay.com/en', 'https://evil.test/en', 'https://
       h.click('[data-action="pwa"]');
       assert.equal(h.$('[data-error]').textContent, h.translations.service_unavailable);
       assert.equal(h.window.location.origin, 'https://coco.test');
+    } finally { h.dom.window.close(); }
+  });
+}
+
+test('DOM UAT MMQR renders/downloads UAT labels and shows a verified transaction receipt', async () => {
+  const h = storefront({ environment: 'uat' });
+  try {
+    await h.details(); h.$('[name="mock_method"][value="mmqr"]').checked = true; h.click('[data-action="create"]');
+    await until(() => !!h.$('[data-qr-image]').getAttribute('src') && !h.$('[data-action="download"]').disabled);
+    assert.equal(h.$('.coco-checkout__notice').textContent, h.translations.uat_notice);
+    assert.equal(h.$('[data-non-payable]').hidden, true);
+    assert.equal(h.$('[data-qr-instructions]').textContent, h.translations.uat_qr_instructions);
+    assert.equal(h.$('[data-qr-image]').alt, h.translations.uat_qr_alt);
+    const labels = []; let downloaded;
+    h.window.HTMLCanvasElement.prototype.getContext = () => ({ fillRect() {}, drawImage() {}, fillText: text => labels.push(text) });
+    h.window.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,AA==';
+    h.window.HTMLAnchorElement.prototype.click = function () { downloaded = this.download; };
+    h.click('[data-action="download"]'); await until(() => Boolean(downloaded));
+    assert.equal(downloaded, 'COCO-MOCK-TEST-UAT-MMQR.png');
+    assert.ok(labels.includes(h.translations.uat_qr_warning));
+    assert.ok(!labels.includes(h.translations.non_payable));
+    await until(() => !h.$('[data-action="check"]').disabled);
+    h.record().status = 'succeeded'; h.record().attempt.transactionId = 'KBZ-VERIFIED-TRANSACTION';
+    h.click('[data-action="check"]'); await until(() => !h.$('[data-result]').hidden);
+    assert.equal(h.$('[data-result-title]').textContent, h.translations.uat_succeeded);
+    assert.equal(h.$('[data-result-message]').textContent, h.translations.uat_succeeded_message);
+    assert.equal(h.$('[data-receipt-payment]').textContent, 'KBZ-VERIFIED-TRANSACTION');
+  } finally { h.dom.window.close(); }
+});
+const uatLink = 'https://static.kbzpay.com/pgw/uat/pwa/#/?appid=kpTest&merch_code=100001&nonce_str=abc123&prepay_id=PREPAY_TEST&timestamp=1793960000&sign=' + 'a'.repeat(64);
+for (const [url, valid] of [[uatLink, true], [uatLink.replace('static.kbzpay.com', 'evil.test'), false], [uatLink.replace('/uat/', '/'), false], [uatLink + '&return_url=https://evil.test', false], [uatLink + '&appid=other', false], [uatLink.replace('https:', 'http:'), false], ['https://www.kbzpay.com/en', false]]) {
+  test(`DOM UAT PWA validates signed UAT handoff shape: ${valid} ${url}`, async () => {
+    const h = storefront({ environment: 'uat' });
+    try {
+      await h.details(); h.click('[data-action="create"]');
+      await until(() => !h.$('[data-payment]').hidden && !h.$('[data-action="create"]').disabled);
+      h.record().attempt.instructions.pwaUrl = url;
+      h.click('[data-action="check"]'); await pause();
+      h.click('[data-action="pwa"]');
+      assert.equal(h.$('[data-error]').textContent, valid ? '' : h.translations.service_unavailable);
+      assert.equal(h.record().status, 'pending');
     } finally { h.dom.window.close(); }
   });
 }

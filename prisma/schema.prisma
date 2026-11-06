@@ -77,6 +77,9 @@ model MockPaymentAttempt {
   initializationStatus String   @default("initializing")
   status               String   @default("pending")
   providerId           String?  @unique
+  merchantOrderId      String?  @unique
+  gatewayTransactionId String?
+  gateway              Json?
   instructions         Json?
   amount               String
   currency             String

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import path from 'node:path';
@@ -20,7 +20,7 @@ function loader(mocks = {}, extra = {}) {
       if (name in mocks) return mocks[name];
       if (name.startsWith('.')) return load(path.resolve(path.dirname(file), name) + '.ts');
       return require(name);
-    }, Response, Request, URL, AbortSignal, TextDecoder, TextEncoder, Date, Buffer, process: { env: {} }, ...extra }, { filename: file });
+    }, Response, Request, URL, URLSearchParams, AbortSignal, TextDecoder, TextEncoder, Date, Buffer, process: { env: {} }, ...extra }, { filename: file });
     return exports;
   }
   return file => load(path.resolve(directory, file));
@@ -31,7 +31,7 @@ const context = {
   graphql: async (_query, { variables }) => Response.json({ data: { shop: { currencyCode: 'MMK' }, nodes: variables.ids.map(id => ({ id, title: 'M', price: '12345.67', product: { title: 'COCO Tee', status: 'ACTIVE' } })) } }),
 };
 const shipping = { name: 'Demo Person', email: 'demo@example.test', phone: '+95912345678', address: 'Demo Street', city: 'Yangon', country: 'Myanmar' };
-function harness({ sampleCatalog = false } = {}) {
+function harness({ sampleCatalog = false, env = {}, transport } = {}) {
   let now = Date.now(), queue = Promise.resolve();
   const tables = { quotes: new Map(), checkouts: new Map(), attempts: new Map(), events: new Map() };
   class Clock extends Date {
@@ -83,10 +83,11 @@ function harness({ sampleCatalog = false } = {}) {
       return result;
     },
   };
-  const load = loader({ '../db.server': { __esModule: true, default: db } }, { Date: Clock, process: { env: { MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED: String(sampleCatalog) } }, fetch: () => { throw new Error('No external payment calls allowed'); } });
+  const runtimeEnv = { MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED: String(sampleCatalog), ...env };
+  const load = loader({ '../db.server': { __esModule: true, default: db } }, { Date: Clock, process: { env: runtimeEnv }, fetch: transport ?? (() => { throw new Error('No external payment calls allowed'); }) });
   const service = load('lib/mock-checkout.server.ts');
   const op = (operation, input = {}, owner = context) => service.checkoutOperation({ capability, operation, ...input }, owner);
-  return { ...service, op, tables, advance: ms => { now += ms; } };
+  return { ...service, op, tables, setEnv: changes => Object.assign(runtimeEnv, changes), advance: ms => { now += ms; } };
 }
 async function begin(h, method = 'kbzpay', owner = context) {
   const quote = await h.op('quote', { lines: [{ variantId: '123', quantity: 2 }], amount: '1.00' }, owner);
@@ -99,7 +100,7 @@ for (const method of ['kbzpay', 'mmqr']) {
     assert.equal(quote.snapshot.amount, '24691.34');
     assert.equal(result.status, 'pending');
     assert.equal(result.attempt.initializationStatus, 'ready');
-    assert.equal(result.attempt.providerId, `SAMPLE-${result.attempt.id}`);
+    assert.equal(result.attempt.providerId, `SIM-${result.attempt.id}`);
     assert.equal(result.attempt.instructions.qrImage, undefined);
     if (method === 'kbzpay') assert.equal(result.attempt.instructions.pwaUrl, 'https://www.kbzpay.com/en');
     else assert.equal(result.attempt.instructions.qrPayload, `COCO-SAMPLE-MMQR:NOT-PAYABLE:${result.attempt.id}`);
@@ -111,8 +112,8 @@ for (const method of ['kbzpay', 'mmqr']) {
       assert.equal(resumed.status, 'pending');
     }
     h.advance(31000);
-    assert.equal((await h.op('status', { checkoutId: result.checkoutId, status: 'succeeded', outcome: 'succeeded' })).status, 'pending');
-    assert.equal(h.tables.events.size, 0);
+    assert.equal((await h.op('status', { checkoutId: result.checkoutId, status: 'failed' })).status, 'succeeded');
+    assert.equal(h.tables.events.size, 1);
   });
   test(`${method}: cancel and concurrent retry preserve history and deadline`, async () => {
     const h = harness(), { result } = await begin(h, method);
@@ -128,12 +129,12 @@ for (const method of ['kbzpay', 'mmqr']) {
     assert.equal(results[0].expiresAt, result.expiresAt);
     await assert.rejects(h.op('cancel', input), { code: 'attempt_unavailable' });
   });
-  test(`${method}: server expires attempts; late cancel cannot reopen them`, async () => {
+  test(`${method}: delayed polling recovers automatic success; late cancel cannot reopen it`, async () => {
     const h = harness(), { result, input } = await begin(h, method); h.advance(900001);
     const expired = await h.op('status', { checkoutId: result.checkoutId });
-    assert.equal(expired.status, 'expired'); assert.equal(expired.attempt.instructions, null);
-    assert.equal((await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id })).status, 'expired');
-    assert.equal((await h.op('create', input)).status, 'expired');
+    assert.equal(expired.status, 'succeeded'); assert.equal(expired.attempt.instructions, null);
+    assert.equal((await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id })).status, 'succeeded');
+    assert.equal((await h.op('create', input)).status, 'succeeded');
     await assert.rejects(h.op('retry', { checkoutId: result.checkoutId, method, idempotencyKey: randomUUID() }), { code: 'retry_unavailable' });
   });
 }
@@ -166,7 +167,7 @@ test('removed simulation operations cannot approve, fail or delay an attempt', a
 test('retired pending attempts never expose hosted links or provider QR images', async () => {
   const h = harness(), { result } = await begin(h);
   const row = h.tables.attempts.get(result.attempt.id);
-  Object.assign(row, { providerId: 'MOCK-OLD', instructions: { pwaUrl: 'https://old.test/mock-payments/hosted?token=old' } });
+  Object.assign(row, { gateway: null, merchantOrderId: null, providerId: 'MOCK-OLD', instructions: { pwaUrl: 'https://old.test/mock-payments/hosted?token=old' } });
   const saved = JSON.stringify(row.instructions);
   const resumed = await h.op('status', { checkoutId: result.checkoutId });
   assert.equal(resumed.status, 'cancelled'); assert.equal(resumed.attempt.instructions, null); assert.equal(resumed.canRetry, true);
@@ -181,7 +182,7 @@ test('historical terminal records remain unchanged and local sweep never deletes
   h.tables.checkouts.get(result.checkoutId).status = 'succeeded';
   const history = JSON.stringify([...h.tables.attempts]);
   const fresh = await begin(h, 'mmqr'); h.advance(900001); await h.sweep();
-  assert.equal(h.tables.attempts.get(fresh.result.attempt.id).status, 'expired');
+  assert.equal(h.tables.attempts.get(fresh.result.attempt.id).status, 'succeeded');
   assert.equal(JSON.stringify([[row.id, row]]), history);
   assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
   assert.equal(h.tables.quotes.size, 2);
@@ -232,4 +233,208 @@ test('sample catalog is gated and server-owned; it does not query Shopify invent
  const result = await h.op('create', { quoteId: quote.quoteId, idempotencyKey: randomUUID(), method: 'mmqr', delivery: shipping });
  assert.equal(result.attempt.initializationStatus, 'ready');
  assert.equal(result.snapshot.amount, '35000.00');
+});
+
+const uatEnv = { KBZPAY_MODE: 'uat', KBZPAY_APP_ID: 'kpTest', KBZPAY_MERCH_CODE: '100001', KBZPAY_APP_KEY: 'test-only-key', KBZPAY_NOTIFY_URL: 'https://coco.test/payments/kbzpay/notify' };
+const protocol = loader()('lib/kbzpay.server.ts');
+function signed(fields) { return { ...fields, sign_type: 'SHA256', sign: protocol.signature(fields, uatEnv.KBZPAY_APP_KEY) }; }
+function gatewayTransport({ loseCreate = false, badSignature = false, malformed = false, loseClose = false } = {}) {
+  let state = 'WAIT_PAY', closeState = 'ORDER_CLOSED';
+  let overrides = {};
+  const calls = [];
+  const transport = async (url, options) => {
+    const body = JSON.parse(options.body).Request;
+    assert.equal(body.sign, protocol.signature(body, uatEnv.KBZPAY_APP_KEY));
+    assert.equal(body.biz_content.appid, uatEnv.KBZPAY_APP_ID);
+    assert.equal(body.biz_content.merch_code, uatEnv.KBZPAY_MERCH_CODE);
+    assert.equal(options.redirect, 'error');
+    calls.push({ url, body });
+    const operation = url.split('/').at(-1);
+    const reference = body.biz_content.merch_order_id;
+    let fields = { result: 'SUCCESS', code: '0', nonce_str: 'testNonce', merch_order_id: reference };
+    if (operation === 'precreate') {
+      if (loseCreate) throw new TypeError('lost response after provider accepted order');
+      assert.match(body.biz_content.timeout_express, /^1[45]m$/);
+      assert.match(reference, /^COCO_[a-f0-9]{32}$/);
+      fields = { ...fields, prepay_id: `PREPAY_${reference}`, qrCode: '000201TEST_UAT_QR' };
+    } else if (operation === 'closeorder') { state = closeState; if (loseClose) throw new TypeError('lost close response'); }
+    else fields = { ...fields, trade_status: state, total_amount: '24691.34', trans_currency: 'MMK', mm_order_id: state === 'PAY_SUCCESS' ? 'transaction-1' : '' };
+    if (malformed) return Response.json({ Response: null });
+    const response = signed({ ...fields, ...overrides });
+    if (badSignature) response.sign = '0'.repeat(64);
+    return Response.json({ Response: response });
+  };
+  return { transport, calls, setState: value => { state = value; }, setCloseState: value => { closeState = value; }, setOverrides: value => { overrides = value; } };
+}
+function callbackFor(attempt, changes = {}) {
+  return { Request: signed({ appid: uatEnv.KBZPAY_APP_ID, merch_code: uatEnv.KBZPAY_MERCH_CODE, merch_order_id: attempt.merchantOrderId, total_amount: attempt.amount, trans_currency: 'MMK', trade_status: 'PAY_SUCCESS', mm_order_id: 'transaction-1', trans_end_time: '1793960000', notify_time: '1793960001', nonce_str: 'notifyNonce', ...changes }) };
+}
+test('signature matches the official canonical field example with an explicit test key', () => {
+  const fields = { timestamp: '1536637503', method: 'kbz.payment.precreate', notify_url: 'http://test.com/payment/notify', nonce_str: '845255910308564481', version: '1.0', sign_type: 'SHA256', sign: 'ignored', biz_content: { appid: 'kp123456789987654321abcdefghijkl', merch_code: '100001', merch_order_id: '201811212009001', trade_type: 'APPH5', total_amount: '1000', trans_currency: 'MMK', title: '' } };
+  const canonical = 'appid=kp123456789987654321abcdefghijkl&merch_code=100001&merch_order_id=201811212009001&method=kbz.payment.precreate&nonce_str=845255910308564481&notify_url=http://test.com/payment/notify&timestamp=1536637503&total_amount=1000&trade_type=APPH5&trans_currency=MMK&version=1.0&key=testAppKey123';
+  assert.equal(protocol.signature(fields, 'testAppKey123'), createHash('sha256').update(canonical).digest('hex').toUpperCase());
+  assert.equal(protocol.signature({ ...fields, refund_list: [{ amount: '1' }] }, 'testAppKey123'), protocol.signature(fields, 'testAppKey123'));
+  assert.throws(() => protocol.flatten({ appid: 'a', biz_content: { appid: 'b' } }));
+});
+for (const method of ['kbzpay', 'mmqr']) {
+  test(`UAT ${method}: signed precreate and missed-callback query recovery, never automatic success`, async () => {
+    const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport });
+    const { result, input } = await begin(h, method);
+    assert.equal(result.paymentEnvironment, 'uat');
+    assert.equal(result.attempt.initializationStatus, 'ready');
+    assert.equal(gateway.calls[0].body.biz_content.trade_type, method === 'mmqr' ? 'PAY_BY_QRCODE' : 'PWAAPP');
+    if (method === 'mmqr') assert.equal(result.attempt.instructions.qrPayload, '000201TEST_UAT_QR');
+    else {
+      const link = new URL(result.attempt.instructions.pwaUrl);
+      assert.equal(link.origin, 'https://static.kbzpay.com');
+      const params = Object.fromEntries(new URLSearchParams(link.hash.split('?')[1]));
+      assert.equal(params.sign, protocol.signature(params, uatEnv.KBZPAY_APP_KEY));
+      assert.equal(params.prepay_id, result.attempt.providerId);
+    }
+    h.advance(31000);
+    assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'pending');
+    gateway.setState('PAY_SUCCESS'); h.advance(11000);
+    assert.equal((await h.op('status', { idempotencyKey: input.idempotencyKey })).status, 'succeeded');
+    assert.equal(h.tables.checkouts.get(result.checkoutId).status, 'succeeded');
+    assert.equal(gateway.calls.filter(c => c.url.endsWith('/precreate')).length, 1);
+  });
+}
+test('simulation succeeds at ten seconds and cancellation before then prevents automatic success', async () => {
+  const h = harness(), first = await begin(h), second = await begin(h, 'mmqr');
+  h.advance(9999);
+  assert.equal((await h.op('status', { checkoutId: first.result.checkoutId })).status, 'pending');
+  await h.op('cancel', { checkoutId: second.result.checkoutId, attemptId: second.result.attempt.id });
+  h.advance(1);
+  assert.equal((await h.op('status', { checkoutId: first.result.checkoutId })).status, 'succeeded');
+  h.advance(10000);
+  assert.equal((await h.op('status', { checkoutId: second.result.checkoutId })).status, 'cancelled');
+});
+test('lost precreate response remains recoverable and repeated create never dispatches again', async () => {
+  const gateway = gatewayTransport({ loseCreate: true }), h = harness({ env: uatEnv, transport: gateway.transport });
+  const { result, input } = await begin(h);
+  assert.equal(result.attempt.initializationStatus, 'reconciliation_required');
+  assert.equal(result.attempt.instructions, null);
+  await h.op('create', input);
+  await assert.rejects(h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id }), { code: 'payment_reconciling' });
+  await assert.rejects(h.op('retry', { checkoutId: result.checkoutId, method: 'kbzpay', idempotencyKey: randomUUID() }), { code: 'retry_unavailable' });
+  h.advance(11000); gateway.setState('PAY_SUCCESS');
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
+  assert.equal(gateway.calls.filter(c => c.url.endsWith('/precreate')).length, 1);
+});
+test('UAT closure must be confirmed, and payment during closure wins over cancellation', async () => {
+  const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport });
+  const { result } = await begin(h);
+  gateway.setCloseState('WAIT_PAY');
+  assert.equal((await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id })).canRetry, false);
+  gateway.setCloseState('PAY_SUCCESS');
+  assert.equal((await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id })).status, 'succeeded');
+  assert.equal(gateway.calls.filter(c => c.url.endsWith('/closeorder')).length, 2);
+});
+test('signed notifications reject mismatches, handle duplicates and retain late success after retry', async () => {
+  const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport });
+  const { result } = await begin(h);
+  const attempt = h.tables.attempts.get(result.attempt.id);
+  for (const changes of [{ appid: 'other' }, { merch_code: 'other' }, { total_amount: '1' }, { trans_currency: 'USD' }, { trade_status: 'WAIT_PAY' }]) await assert.rejects(h.paymentNotification(callbackFor(attempt, changes)));
+  const invalid = callbackFor(attempt); invalid.Request.sign = '0'.repeat(64);
+  await assert.rejects(h.paymentNotification(invalid), { code: 'invalid_payment_signature' });
+  await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id });
+  const next = await h.op('retry', { checkoutId: result.checkoutId, method: 'mmqr', idempotencyKey: randomUUID() });
+  await Promise.all([h.paymentNotification(callbackFor(attempt)), h.paymentNotification(callbackFor(attempt))]);
+  const recovered = await h.op('status', { checkoutId: result.checkoutId });
+  assert.equal(recovered.status, 'succeeded'); assert.equal(recovered.canRetry, false); assert.equal(recovered.attempt.instructions, null);
+  assert.equal(recovered.attempt.id, attempt.id); assert.equal(recovered.attempt.transactionId, 'transaction-1');
+  await assert.rejects(h.paymentNotification(callbackFor(attempt, { mm_order_id: 'different-transaction' })), { code: 'payment_evidence_mismatch' });
+  assert.equal([...h.tables.events.values()].filter(e => e.status === 'succeeded').length, 1);
+  assert.equal(h.tables.attempts.get(next.attempt.id).status, 'pending');
+});
+test('query evidence mismatches stay pending; failed and expired gateway results are authoritative', async () => {
+  for (const override of [{ total_amount: '1' }, { trans_currency: 'USD' }, { merch_order_id: 'wrong' }, { merch_code: 'wrong' }, { trade_status: 'UNKNOWN' }]) {
+    const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport }), { result } = await begin(h);
+    gateway.setState('PAY_SUCCESS'); gateway.setOverrides(override); h.advance(11000);
+    assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'pending');
+    assert.equal(h.tables.events.size, 0);
+  }
+  for (const [remote, expected] of [['PAY_FAILED', 'failed'], ['ORDER_EXPIRED', 'expired']]) {
+    const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport }), { result } = await begin(h);
+    gateway.setState(remote); h.advance(11000);
+    assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, expected);
+  }
+});
+test('lost closure acknowledgement blocks retry until status confirms closure', async () => {
+  const gateway = gatewayTransport({ loseClose: true }), h = harness({ env: uatEnv, transport: gateway.transport }), { result } = await begin(h);
+  await assert.rejects(h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id }), { code: 'payment_reconciling' });
+  await assert.rejects(h.op('retry', { checkoutId: result.checkoutId, method: 'mmqr', idempotencyKey: randomUUID() }), { code: 'retry_unavailable' });
+  h.advance(11000);
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'cancelled');
+  const input = { checkoutId: result.checkoutId, method: 'mmqr', idempotencyKey: randomUUID() };
+  const next = await Promise.all([h.op('retry', input), h.op('retry', input)]);
+  assert.equal(next[0].attempt.id, next[1].attempt.id);
+  assert.equal(gateway.calls.filter(c => c.url.endsWith('/precreate')).length, 2);
+});
+test('retry near checkout deadline expires without extending the simulation success window', async () => {
+  const h = harness(), { result } = await begin(h);
+  await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id });
+  h.advance(895000);
+  const retry = await h.op('retry', { checkoutId: result.checkoutId, method: 'mmqr', idempotencyKey: randomUUID() });
+  assert.equal(retry.expiresAt, result.expiresAt); h.advance(11000);
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'expired');
+});
+test('UAT refuses a retry with less than one gateway minute left before creating another attempt', async () => {
+  const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport }), { result } = await begin(h);
+  await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id });
+  h.advance(850000);
+  await assert.rejects(h.op('retry', { checkoutId: result.checkoutId, method: 'mmqr', idempotencyKey: randomUUID() }), { code: 'retry_unavailable' });
+  assert.equal(h.tables.attempts.size, 1);
+  assert.equal(gateway.calls.filter(c => c.url.endsWith('/precreate')).length, 1);
+});
+test('release pause stops new payments while idempotency recovery and callbacks remain available', async () => {
+  const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport }), { result, input } = await begin(h);
+  h.setEnv({ KBZPAY_ACCEPT_NEW_PAYMENTS: 'false' });
+  await assert.rejects(begin(h), { code: 'payment_unavailable' });
+  assert.equal((await h.op('create', input)).attempt.id, result.attempt.id);
+  await h.paymentNotification(callbackFor(h.tables.attempts.get(result.attempt.id)));
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
+});
+test('invalid UAT configuration fails before claiming; bad provider responses never fall back', async () => {
+  for (const env of [{ KBZPAY_MODE: 'prod' }, { ...uatEnv, KBZPAY_APP_KEY: '' }, { ...uatEnv, KBZPAY_GATEWAY_BASE_URL: 'https://api.kbzpay.com/payment/gateway' }]) {
+    const h = harness({ env }); await assert.rejects(begin(h), { code: 'payment_unavailable' }); assert.equal(h.tables.attempts.size, 0);
+  }
+  for (const options of [{ badSignature: true }, { malformed: true }]) {
+    const gateway = gatewayTransport(options), h = harness({ env: uatEnv, transport: gateway.transport });
+    const { result } = await begin(h); h.advance(20000);
+    const status = await h.op('status', { checkoutId: result.checkoutId });
+    assert.equal(status.paymentEnvironment, 'uat'); assert.equal(status.status, 'pending'); assert.equal(status.canRetry, false); assert.equal(status.attempt.instructions, null);
+  }
+});
+test('stored mode survives configuration switch and old sample attempts cannot auto-succeed', async () => {
+  const env = { ...uatEnv, KBZPAY_MODE: 'simulation' }, h = harness({ env });
+  const { result } = await begin(h);
+  await assert.rejects(h.paymentNotification(callbackFor(h.tables.attempts.get(result.attempt.id))), { code: 'invalid_payment_signature' });
+  h.setEnv({ KBZPAY_MODE: 'uat' }); h.advance(10000);
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
+  const old = harness(), legacy = await begin(old);
+  Object.assign(old.tables.attempts.get(legacy.result.attempt.id), { gateway: null, merchantOrderId: null });
+  old.advance(20000);
+  assert.equal((await old.op('status', { checkoutId: legacy.result.checkoutId })).status, 'cancelled');
+  const gateway = gatewayTransport(), uat = harness({ env: uatEnv, transport: gateway.transport }), payment = await begin(uat);
+  uat.setEnv({ KBZPAY_MODE: 'simulation' }); uat.advance(20000);
+  assert.equal((await uat.op('status', { checkoutId: payment.result.checkoutId })).status, 'pending');
+  assert.equal(uat.tables.attempts.get(payment.result.attempt.id).environment, 'uat');
+});
+test('a callback racing cancellation preserves one durable checkout success', async () => {
+  const gateway = gatewayTransport(), h = harness({ env: uatEnv, transport: gateway.transport }), { result } = await begin(h);
+  const attempt = h.tables.attempts.get(result.attempt.id);
+  await Promise.all([h.op('cancel', { checkoutId: result.checkoutId, attemptId: attempt.id }), h.paymentNotification(callbackFor(attempt))]);
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
+  assert.equal(h.tables.checkouts.size, 1);
+  assert.equal([...h.tables.events.values()].filter(e => e.status === 'succeeded').length, 1);
+});
+test('notification route acknowledges only after persistence, with the documented plain success body', async () => {
+  for (const fails of [false, true]) {
+    let called = false;
+    const action = loader({ '../lib/mock-checkout.server': { paymentNotification: async () => { called = true; if (fails) throw new Error('storage unavailable'); } } }, { process: { env: { MOCK_CHECKOUT_ENABLED: 'true' } } })('routes/payments.kbzpay.notify.tsx').action;
+    const result = await action({ request: new Request('https://coco.test/payments/kbzpay/notify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"Request":{}}' }) });
+    assert.equal(called, true); assert.equal(result.status, fails ? 503 : 200);
+    if (!fails) assert.equal(await result.text(), 'success');
+  }
 });

@@ -1,51 +1,51 @@
-# Signed sample checkout API
+# KBZPay simulation and UAT checkout
 
-Current source replaces the payment simulator with local sample responses. Historical deployment evidence is retained in `mock-checkout-deployment.md`; the backend and unpublished Dev Preview are deployed as recorded there; retiring remote simulator resources remains separate work.
+Current source supersedes the older sample-only and hosted-simulator implementation. The user-authorized simulation rollout is deployed as recorded in [mock-checkout-deployment.md](mock-checkout-deployment.md); UAT remains inactive. Only private checkout/payment records are updated: no Shopify orders, email, fulfillment, production payments or fake gateway pages.
 
-## Authentication and contract
+## Storefront contract
 
-`POST /apps/proxy/mock-checkout` maps to app route `/external-api/mock-checkout`. Requests require verified Shopify app proxy signatures, the configured shop and offline app session, JSON content type, and a 64-hex browser capability. A signed customer ID binds customer-owned records. Never trust a customer ID supplied in the JSON body. Responses retain `mock: true` and private/no-store headers. Delivery data is only returned to the owner.
+Signed JSON `POST /apps/proxy/mock-checkout` maps to `/external-api/mock-checkout`. Shopify proxy verification, matching configured COCO shop/offline session, a 64-hex browser capability and signed customer ownership remain required. Responses use `mock: true` for compatibility and private/no-store headers; UAT is identified by `paymentEnvironment: "uat"`, simulation by `"simulation"`.
 
-Supported operations:
-
-| Operation | Inputs besides capability | Result |
+| Operation | Additional inputs | Result |
 | --- | --- | --- |
-| `quote` | catalog `lines` or `source: "sample"` | quote ID, server-priced snapshot, five-minute deadline |
-| `create` | quoteId, idempotencyKey, method, delivery | persistent checkout/attempt and instructions |
-| `status` | checkoutId, or saved idempotencyKey | same checkout/attempt, authoritative local status |
-| `cancel` | checkoutId, current attemptId | cancelled unless already terminal/expired |
-| `retry` | checkoutId, new idempotencyKey, method | new attempt after cancellation/failure, same checkout deadline |
+| quote | catalog lines or `source: "sample"` | Server-priced snapshot and five-minute quote |
+| create | quoteId, idempotencyKey, method, delivery | Durable checkout/attempt and payment instructions |
+| status | checkoutId or saved idempotencyKey | Owned checkout, verified payment status and recovery |
+| cancel | checkoutId, current attemptId | Verified cancellation or pending/reconciliation error |
+| retry | checkoutId, new idempotencyKey, method | New attempt after confirmed failure/cancellation |
 
-Methods remain `kbzpay` and `mmqr`. `simulate` returns `invalid_operation`; the hosted gateway and callback routes no longer exist. Neither body/query status fields nor navigation can approve payment.
+Methods are `kbzpay` and `mmqr`. Instructions remain `{pwaUrl}` or `{qrPayload}`; no `qrImage`. The theme generates and downloads QR images locally. `simulate` remains rejected; browser/query status fields and navigation cannot approve payments. Attempts additionally expose the verified gateway `transactionId` when available. Late success presents the successful attempt's receipt, even if a newer attempt existed.
 
-`quote` sample mode requires `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED=true` and freezes the fictional jersey at 35,000 MMK, quantity one, zero shipping/tax. Catalog quotes read Shopify prices and require MMK. Create/retry retain serializable transactions and retry write/unique conflicts. Lost creation responses recover through the saved idempotency key.
+Quotes freeze exact MMK amounts. The fictional 35,000 MMK sample product requires `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED=true`. Catalog pricing is unchanged. Checkout lifetime remains 15 minutes; retries never extend it.
 
-## Instructions and lifecycle
+## Simulation
 
-New attempts are atomically persisted as ready/pending with a local reference `SAMPLE-<attempt ID>`. The legacy `providerId` field name and `environment: "simulation"` database constraint are retained for compatibility; neither indicates a provider transaction.
+`KBZPAY_MODE=simulation` is the default. No KBZPay calls or credentials are used. PWA instructions point to `https://www.kbzpay.com/en`; MMQR contains `COCO-SAMPLE-MMQR:NOT-PAYABLE:<attempt ID>`. Neither is a payment session. The backend considers a new simulation paid after 10 seconds and persists success when status polling or the protected sweep next reconciles it, even after a browser reload or a long absence. There is no process-local timer and navigation has no effect. Cancellation before the success deadline prevents later automatic success.
 
-PWA instructions:
+Historical attempts without persisted gateway identity are retired on resume: pending becomes cancelled, or expired after its deadline. Historical terminal records stay unchanged. Their old instructions are never exposed. They cannot acquire automatic success by changing the configured mode.
 
-```json
-{"pwaUrl":"https://www.kbzpay.com/en"}
-```
+## UAT protocol and lifecycle
 
-MMQR instructions:
+`KBZPAY_MODE=uat` connects directly to KBZPay. Configuration is validated before a new attempt is claimed; no production mode or simulation fallback exists. See [UAT setup](kbzpay-uat.md).
 
-```json
-{"qrPayload":"COCO-SAMPLE-MMQR:NOT-PAYABLE:<attempt ID>"}
-```
+The adapter uses `kbz.payment.precreate` version 1.0, `PWAAPP` or `PAY_BY_QRCODE`, and `queryorder`/`closeorder` version 3.0. It flattens signable fields, excludes empty/sign/sign_type/array values, sorts ASCII parameter names, appends `&key=<app key>` and computes uppercase SHA256. Extended scalar fields participate in verification. Ambiguous flattened names and unsafe JSON numbers are rejected.
 
-No `qrImage` is returned. The frontend generates the PNG locally with QRCode 1.5.4. The public PWA website is not a payment session and the QR is non-payable. New attempts remain pending until cancellation or server expiry at the original fifteen-minute checkout deadline. Retry never extends that deadline. Historical success/failure states are readable but cannot be produced by this implementation.
+Each attempt persists its environment, unique alphanumeric merchant order reference, gateway/merchant/PWA/notification identity and a signing-key fingerprint (never the secret). Mode/merchant URL changes cannot reinterpret existing attempts. The current app key must match the saved fingerprint to reconcile an old UAT attempt; retain that key until its payments are resolved. Key rotation across unresolved attempts needs an explicit credential-version/keyring extension; do not overwrite the key and assume old attempts remain recoverable.
 
-Status verifies ownership before mutation. Old pending simulator attempts are cancelled when resumed (expired if past deadline), retain their historical stored instructions, expose no obsolete links/images, and may retry before checkout expiry. Historical terminal rows and event history are retained. Existing schemas/migrations remain unchanged; no data migration is required.
+A serializable transaction claims the merchant reference before network I/O. Precreate is dispatched once for a newly claimed attempt, outside the transaction. Lost responses, rejection, malformed bodies, bad signatures and timeouts leave a durable `reconciliation_required` attempt. Repeating create with the same idempotency key never repeats precreate. Status and sweep query the original merchant reference. A pending query cannot reconstruct a lost QR/PWA initialization response; confirm gateway closure before retrying. Unknown/not-found gateway responses remain unresolved rather than being guessed safe for retry.
 
-The existing protected `/internal/mock-payments-sweep` endpoint processes up to 50 due pending attempts for local expiry/retirement. It performs no external dispatch, callbacks, payment reconciliation or record deletion. Its optional scheduler retains the existing route/secret names for compatibility. Status polling also applies expiry, so cron is not required for storefront correctness.
+Gateway responses require verified SHA256 signatures. Query success must match merchant order reference, amount/currency and any returned merchant identifiers, with a gateway transaction reference for paid results. Notifications require all merchant identity, reference, amount and currency fields. Success evidence is persisted atomically with checkout success and an idempotent event. Callback payment success can supersede a previously cancelled/expired attempt; it cannot create a second checkout. If another attempt is pending after late success, status/sweep tries to close it; uncertainty remains pending and its instructions are hidden. Multiple actual gateway transactions, if ever reported, retain their evidence for manual investigation; no automatic refund exists.
 
-## Setup and verification
+Cancellation queries first, invokes close only for pending UAT payments, then queries again. Only confirmed gateway closure/failure/expiry unlocks the applicable next action. Uncertain initialization cannot be cancelled during its initial 10-second dispatch window. Transport errors return `payment_reconciling`; a still-pending closure result keeps retry disabled. Local time alone never declares a UAT payment unpaid or safe to retry. Instructions hide at the local deadline while reconciliation continues.
 
-Required runtime configuration: Shopify app credentials/session setup, `DATABASE_URL`, `DIRECT_URL`, `MOCK_CHECKOUT_ENABLED=true`, `MOCK_CHECKOUT_SHOP`, and optional `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED=true`. The optional sweep requires `MOCK_PAYMENT_SWEEP_SECRET`. `.env.example` lists these names without secrets. Old provider/callback/hosted secrets and return origins are unused by checkout; the unrelated external API proof of concept remains independent.
+Outbound requests have eight-second deadlines, redirect rejection and 32 KiB response limits. New UAT retries require at least one whole minute remaining; they never extend the checkout deadline. Reconciliation is spaced by 10 seconds per pending attempt. The existing bearer-protected `POST /internal/mock-payments-sweep` checks at most five due attempts concurrently; it does not delete history. Polling also recovers payments, but configure the scheduler for unattended/missed-callback recovery. No logs contain signed payloads, credentials, capabilities or delivery details.
 
-Run `npm ci`, `npm test`, `npm run typecheck`, `npm run lint`, and `npm run build`. `COCO_THEME_PATH` overrides the default sibling theme location for DOM tests. In the theme, `npm run test:checkout-qr` decodes the shipped browser bundle output. No dev server is needed. Tests cover signatures, shop/customer/capability ownership, pricing, idempotency, cancellation, retry, expiry, removed operations, historical records, stale QR generation, download warnings, reload and rendering errors.
+## Callback
 
-Required tools/skills and their setup are documented in `AGENTS.md` and `docs/agent-setup.md`. No new backend dependency, migration, KBZPay account, provider secret, or payment-provider plugin is needed. Remote Supabase/Vercel changes and deployment require separate work; preserve deployed resources and the published theme setting during this implementation.
+KBZPay directly posts its JSON `Request` envelope to `POST /payments/kbzpay/notify` on the app host, not through the Shopify proxy. The route requires checkout enabled, JSON and a body of at most 16 KiB. It verifies evidence using the attempt's saved UAT identity, accepts only `PAY_SUCCESS`, and returns HTTP 200 with plain text `success` only after durable persistence. Repeated notifications are idempotent. Invalid signatures/mismatches are rejected; storage failure returns 503 so KBZPay can retry. Simulation attempts reject gateway notifications. The route has no Shopify-login dependency.
+
+## Validation and release boundary
+
+Run `npm ci`, `npx prisma generate`, `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`. `npm test` includes isolated PGlite migration tests, protocol/lifecycle tests and companion-theme DOM journeys. Set `COCO_THEME_PATH` if needed. In the theme run `npm run test:checkout-qr`; the generated QR bundle is unchanged. Theme Check can validate Liquid/locale changes without a dev server.
+
+Apply the additive `20261106000000_kbzpay_uat` migration only during an authorized release to the verified COCO database, before starting the new code. No remote schema/configuration/deployment changes are part of source preparation. Older code retires new simulation attempts and cannot safely interpret UAT state, so do not roll back app code while unresolved UAT attempts exist. Set `KBZPAY_ACCEPT_NEW_PAYMENTS=false` to pause new attempts while preserving idempotency recovery, status, callback and sweep processing; keep `MOCK_CHECKOUT_ENABLED=true` until pending payments are reconciled before any code rollback; retain the additive columns and history. Tools and setup are documented in [agent-setup.md](agent-setup.md).

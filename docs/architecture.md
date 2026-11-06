@@ -1,3 +1,5 @@
+> Current checkout source: direct KBZPay simulation/UAT supersedes older checkout/provider notes below. See [mock-checkout.md](mock-checkout.md) and [kbzpay-uat.md](kbzpay-uat.md). Simulation automatically succeeds after 10 seconds; UAT uses verified gateway evidence and updates private records only. This source update is not a deployment.
+
 # Architecture and integration guide
 
 ## Responsibilities and request flow

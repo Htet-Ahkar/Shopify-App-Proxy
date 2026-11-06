@@ -9,6 +9,7 @@ test('PostgreSQL migration enforces private records, payment claims, RLS and cas
   try {
     await pg.exec('CREATE ROLE anon; CREATE ROLE authenticated; CREATE SCHEMA shopify; SET search_path TO shopify;');
     await pg.exec(fs.readFileSync('prisma/migrations/20261105000000_mock_checkout/migration.sql', 'utf8'));
+    await pg.exec(fs.readFileSync('prisma/migrations/20261106000000_kbzpay_uat/migration.sql', 'utf8'));
     const quote = randomUUID(), checkout = randomUUID(), first = randomUUID(), second = randomUUID();
     await pg.query('INSERT INTO "MockQuote" (id,shop,"capabilityHash",snapshot,"expiresAt") VALUES ($1,$2,$3,$4,now()+interval \'5 minutes\')', [quote, 'coco.test', 'hash', '{}']);
     await pg.query('INSERT INTO "MockCheckout" (id,reference,"quoteId",shop,"capabilityHash",snapshot,delivery,"expiresAt") VALUES ($1,$2,$3,$4,$5,$6,$7,now()+interval \'15 minutes\')', [checkout, 'COCO-MOCK-TEST', quote, 'coco.test', 'hash', '{}', '{}']);
@@ -19,6 +20,9 @@ test('PostgreSQL migration enforces private records, payment claims, RLS and cas
     await insertAttempt(second, 2);
     await assert.rejects(insertAttempt(randomUUID(), 2, 'failed'), e => e.code === '23505');
     await assert.rejects(pg.query('UPDATE "MockPaymentAttempt" SET environment=$1 WHERE id=$2', ['prod', first]), e => e.code === '23514');
+    await pg.query('UPDATE "MockPaymentAttempt" SET environment=$1, gateway=$2, "merchantOrderId"=$3 WHERE id=$4', ['uat', JSON.stringify({ mode: 'uat' }), `COCO_${first.replaceAll('-', '')}`, first]);
+    await assert.rejects(pg.query('UPDATE "MockPaymentAttempt" SET gateway=$1 WHERE id=$2', [JSON.stringify({ mode: 'simulation' }), first]), e => e.code === '23514');
+    await assert.rejects(pg.query('UPDATE "MockPaymentAttempt" SET "merchantOrderId"=NULL WHERE id=$1', [first]), e => e.code === '23514');
     await pg.query('INSERT INTO "MockPaymentEvent" (id,"attemptId",status) VALUES ($1,$2,$3)', ['event-1', first, 'failed']);
     await assert.rejects(pg.query('INSERT INTO "MockPaymentEvent" (id,"attemptId",status) VALUES ($1,$2,$3)', ['event-1', first, 'failed']), e => e.code === '23505');
     for (const role of ['anon', 'authenticated']) {

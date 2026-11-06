@@ -17,7 +17,7 @@ Theme GET /apps/proxy
   → Selected JSON fields returned to theme
 ```
 
-The theme has a separate proxy test section. Its custom checkout remains a browser-only mock, unconnected to this app. Provider choice and real checkout operations remain pending; live integration is future work.
+The theme also uses a signed, persistent test checkout with KBZPay PWA and MMQR. Source supports automatic simulation and direct KBZPay UAT; see [checkout contract](docs/mock-checkout.md) and [UAT activation](docs/kbzpay-uat.md). The UAT source is not deployed automatically and requires its additive migration during a separately authorized release.
 
 See the [architecture and integration guide](docs/architecture.md) for endpoints, responses, manual verification, and production gaps. [AGENTS.md](AGENTS.md) contains repository working rules.
 
@@ -82,7 +82,7 @@ Prisma uses Supabase PostgreSQL in the private `shopify` schema. Keep the schema
 
 ## Checkout boundaries
 
-Keep checkout UI in the theme and secrets and external requests in this app. The mock must not create real Shopify orders, call real payment gateways, transmit real card data, or store payment details. Mock responses must remain clearly labeled as simulated/demo behavior.
+Keep checkout UI in the theme and secrets and external requests in this app. The test checkout must not create Shopify orders, call production payment gateways, transmit card data or store wallet credentials. Simulation never contacts KBZPay; direct UAT requires private merchant configuration and approved test wallets. Keep simulation/UAT labels explicit.
 
 Official [Shopify proxy documentation](https://shopify.dev/docs/apps/build/online-store/app-proxies) explains the storefront mapping. The integration guide includes authentication and configuration references checked through Context7.
 
