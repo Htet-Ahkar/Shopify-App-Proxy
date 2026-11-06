@@ -1,7 +1,7 @@
 -- Run only in the isolated preview database after configuring pg_cron, pg_net,
 -- and Vault. These Vault entries contain the full app-host sweep URL and bearer
 -- secret. Provision them privately; never insert actual credentials in this file.
--- One job invokes provider dispatch, callback retries, app reconciliation, and cleanup.
+-- Optional local expiry only. No provider dispatch, callbacks, reconciliation, or deletion.
 SELECT cron.schedule(
   'coco-mock-payment-reconciliation',
   '* * * * *',

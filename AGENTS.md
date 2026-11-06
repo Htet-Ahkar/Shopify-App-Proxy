@@ -1,5 +1,29 @@
 # AGENTS.md
 
+## Checkout review alignment — 6 November 2026
+
+The user authorized staging the existing sample checkout implementation, simulator-source removals, updated tests, and related documentation to match the companion theme. This supersedes older instructions to leave the index unchanged for this correction only; preserve unrelated staged content. Keep Dev Preview's enabled setting and package versions unchanged. No deployment, migration, remote resource cleanup, commit, push, or dev server is authorized by this correction. Required plugins, MCP servers, skills, dependencies, configuration, and setup remain documented below and in `docs/agent-setup.md`; no new tooling is required. Validate the final staged snapshots together, including the newly tracked sample-instructions module, so working-tree files cannot mask missing staged dependencies.
+
+## Latest authorized deployment — 6 November 2026
+
+Proxy sample responses are deployed to the existing Production Vercel app (`dpl_5in7PbcmySBxuDExqUsxaA1sWE71`) and unpublished Dev Preview `187388330168`. Published theme `179650658488` and both themes' settings are unchanged. Signed-proxy PWA/MMQR, QR download decoding, reload, cancellation/retry and simulation rejection passed. No migrations, environment changes, remote simulator-resource removal, Git push/commit, staging changes or dev server. Existing global GSAP theme errors were reproduced on the published theme and remain outside this release. See the companion `docs/mock-checkout-deployment.md` for source fingerprint, exact targets, tooling, browser limitations and rollback; older source-only/hosted rollout notes below are historical.
+
+Required deployment tools: authenticated Vercel MCP for current-source deployment/status/logs, existing COCO Shopify CLI login for scoped unpublished theme uploads, Context7 MCP plus Vercel/Shopify skills for docs, and temporary Playwright/Chromium for browser acceptance. Their purposes, dependencies and setup remain in `docs/agent-setup.md`. Never deploy an older Git snapshot over the current working implementation.
+
+Preview: https://dut44m-vn.myshopify.com/pages/checkout?preview_theme_id=187388330168&view=checkout&demo=sample
+
+## Current source: proxy sample instructions — 6 November 2026
+
+This section supersedes the simulator/hosted-payment implementation guidance below. Those rollout notes describe historical deployed behavior; this source change is not deployed automatically.
+
+- The signed `POST /apps/proxy/mock-checkout` endpoint supports quote/create/status/retry/cancel. The app generates instructions locally: PWA `https://www.kbzpay.com/en`, MMQR raw `COCO-SAMPLE-MMQR:NOT-PAYABLE:<attempt ID>`. No `qrImage`, hosted gateway, simulated outcomes, callback approval, or external payment provider is used.
+- New sample attempts remain pending until cancelled or expired. Keep status polling/reload recovery; never infer success from navigation or query parameters. Retired pending simulator attempts become cancelled on resume (expired if past deadline); historical terminal data remains unchanged.
+- The companion theme bundles `qrcode@1.5.4` locally as `assets/checkout-qr.js`; `esbuild@0.25.12` builds it. In `../../coco-original`, run `npm ci`, then `npm run build:checkout-qr`. Commit the generated asset. `npm run test:checkout-qr` uses pinned jsQR 1.4.0/pngjs 5.0.0 to decode its output. All are development dependencies; the browser loads the committed asset with `defer` before checkout JS. Preserve its MIT license header.
+- Runtime setup: Shopify auth/database variables, `MOCK_CHECKOUT_ENABLED`, `MOCK_CHECKOUT_SHOP`, optional `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED`; `MOCK_PAYMENT_SWEEP_SECRET` protects optional local expiry scheduling. Hosted/provider/callback configuration is no longer consumed by checkout. No schema migration is needed.
+- Required documentation tool: Context7 MCP (`https://mcp.context7.com/mcp`), configured in the agent MCP settings; resolve official library IDs then query current documentation before library/API changes. Shopify plugin/skill plus Shopify Dev MCP or local Shopify CLI Theme Check validates Liquid; install/authenticate Shopify CLI against COCO only. Browser MCP or the documented temporary Playwright/Chromium fallback verifies desktop/mobile behavior. No payment-provider plugin or KBZPay credentials are required.
+- Companion persistence work uses the Supabase and Postgres best-practices skills; Supabase MCP/CLI is only needed for remote database/function operations. Vercel MCP/CLI and hosting skills are only needed for a separately authorized deployment. Install/connect those plugins independently, verify the COCO account, and keep credentials in private host stores. Detailed tool dependencies, configuration and setup links remain in `docs/agent-setup.md` and the companion guide.
+- Preserve staged changes. Do not start a dev server, run migrations, deploy, change the live theme, or remove deployed simulator resources as part of this source-only change. See `docs/mock-checkout.md` for the current API contract. Run `npm ci`, `npm test`, `npm run typecheck`, `npm run lint`, and `npm run build` here; set `COCO_THEME_PATH` if the theme is elsewhere. The existing Prisma/React Router stack is unchanged. The protected sweep route now only expires/retires pending attempts locally; it never calls the provider or deletes records. Simulator Edge Function/hosted/callback source is removed; historical migrations/tables are retained.
+
 ## Project Context
 
 This repository is the Shopify app companion for the COCO ORIGINAL Shopify theme.
@@ -154,3 +178,31 @@ This section supersedes earlier statements that checkout is browser-only/not con
 - Required tooling: Shopify skill and developer MCP/Theme Check for theme/API validation; Context7 MCP for current official API/library docs; Supabase skill and Postgres best-practices skill before schema/RLS/Edge Function work; Supabase MCP/CLI for isolated preview configuration; Vercel environment/functions/deployment skills and Vercel MCP/CLI when configuring hosting. Browser MCP is required for mobile/desktop acceptance against preview. Tool purposes, dependencies, account verification, setup URLs, and secret configuration are in [docs/agent-setup.md](docs/agent-setup.md) and the mock checkout runbook.
 - Node/npm and existing Prisma/React Router dependencies remain unchanged. Deno/Supabase CLI are required to check/deploy the Edge Function; its Postgres.js and QR dependencies are version-pinned in imports.
 - Do not run `vercel-build`, `setup`, migrations, cron installation, or deployment against an unverified/shared database. Production and preview secrets/databases must be separate.
+
+
+## Current deployed Preview configuration
+
+See [docs/mock-checkout-deployment.md](docs/mock-checkout-deployment.md). On 5 November 2026 the user declined a paid Supabase branch and approved using existing COCO project `jsiqibwdsvvhwhlvhisj`; this overrides the separate-preview-database requirement for this deployment. Preview-only Vercel variables, provider secrets, private tables/roles, and minute cron are configured and verified. Production environment IDs/keys remain unchanged. Storefront session/proxy/Page/template wiring is still pending; do not claim the journey is live or silently enable Production.
+
+Vercel MCP is now available and team-authorized; use it for environment, deployment, and alias operations. Supabase MCP covers SQL/schema/function deployment; its missing secret-management capability was handled through the authenticated Supabase Management API using the existing private CLI token, never printed or committed. Context7/Shopify/Supabase/Vercel skills and setup dependencies remain as documented. Register/verify the Preview OAuth callback before Preview authorization. Preserve staged changes and never expose secret values in documentation.
+
+The provider callback source now uses an eight-second network deadline and `EdgeRuntime.waitUntil` for immediate dispatch, backed by the persisted outbox/cron. This local source fix was deployed directly through Supabase MCP and must be committed before future releases to prevent regression. Runtime app roles remain restricted; privileged migration setup was applied via Supabase admin and marked with Prisma migrate resolve. Do not grant CREATE ROLE or global database CREATE privileges to runtime roles.
+
+
+## Connected sample catalog and hosted PWA
+
+The user selected the existing app backend for the connected mockup. Production deployment is ready and guest browser journeys are verified; see the deployment runbook for the active deployment and operational details. Keep the published Shopify theme disabled; enable only Dev Preview. Existing approved COCO database sharing remains in effect; no paid branch.
+
+- `quote` supports `source: "sample"` when `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED=true`; it freezes a server-owned fictional jersey at 35,000 MMK, quantity one, independent of Shopify inventory. Normal catalog pricing/authentication is retained.
+- `instructions.pwaUrl` is generated by the authenticated provider and points to `/mock-payments/hosted`. The shared token module signs attempt identity/deadline with independent `MOCK_PAYMENT_HOSTED_SECRET`; `MOCK_PAYMENT_HOSTED_ORIGIN` must be the canonical HTTPS backend origin in both runtimes. Return origins are separately allowlisted in app `MOCK_PAYMENT_RETURN_ORIGINS`. No delivery details or broad checkout capability are exposed on hosted pages.
+- Hosted GET only reconciles through the authenticated provider; POST requires the configured public Origin or null Origin with browser-controlled same-origin Fetch Metadata, accepts only success/cancel, and returns 303. Terminal states remain idempotent. Tokens cannot operate on expired/superseded/MMQR attempts. Status/callback reconciliation uses the existing evidence transition service. Saved instructions cannot change. Legacy PWA paths remain accepted for saved attempts.
+- Required tools, skills, dependencies and MCP setup remain in `docs/agent-setup.md`; no new package dependency or schema migration is required. Deno check the provider together with `_shared/hosted-token.ts` from a standalone directory to avoid resolving the enclosing Node project. Do not run a development server automatically.
+
+
+## Active connected mock deployment
+
+On 6 November 2026 the user explicitly approved Production at `htetahkars-projects/shopify-app-proxy` and the COCO provider project. Deployment `dpl_Dg4kNWhNDNTq1Yff5sB6UQpNgG7R` is ready, provider version 7 is active, and callbacks/Vault cron target the canonical Production app origin. Shopify has an offline session and the real signed proxy sample quote works. Only unpublished Dev Preview is enabled; the published theme remains disabled. Old backend Preview provider credentials are retired. See `docs/mock-checkout-deployment.md`; its active rollout supersedes earlier Preview-only restrictions for this user-approved setup.
+
+Temporary Playwright 1.58.2/Chromium tooling under `/tmp/coco-browser-verification` verified deployed guest desktop PWA and mobile MMQR, hosted mobile layout, QR download, receipts and reload recovery without starting a dev server. This is the fallback when Chrome/Playwright MCP is disconnected or missing its browser. Its dependency installation/browser cache and commands are in `docs/agent-setup.md`; do not add it as an app runtime dependency. Signed-in customer ownership is covered by automated tests; a real customer-account browser run remains a manual acceptance item.
+
+Hosted status recovery redirects uncertain POST responses to an authenticated GET; it never assumes provider success. Preserve the configured public-origin and null-Origin/same-origin Fetch Metadata checks with no-referrer privacy. Commit the local hotfixes before deploying from Git again; user staging was preserved.

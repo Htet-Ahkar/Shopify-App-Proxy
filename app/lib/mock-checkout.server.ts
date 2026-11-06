@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type MockPaymentAttempt } from "@prisma/client";
 import prisma from "../db.server";
-import { capabilityHash, CheckoutError, decimal, delivery, hash, identifier, lines, method, money, owned, TERMINAL, validateEvidence, type Evidence, type Snapshot } from "./mock-checkout-domain.server";
-import { provider, validInstructions, type ProviderPayment } from "./mock-payment-provider.server";
+import { capabilityHash, CheckoutError, decimal, delivery, hash, identifier, lines, method, money, owned, TERMINAL, type Snapshot } from "./mock-checkout-domain.server";
+import { sampleInstructions, isSampleAttempt } from "./mock-payment-sample.server";
 
 type Owner = { shop: string; customerId: string | null; capabilityHash: string };
 type Graphql = (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
@@ -45,58 +45,17 @@ async function findCheckout(id: string, owner: Owner) {
   return record;
 }
 
-export async function applyEvidence(evidence: Evidence) {
-  return atomic(async tx => {
-    const attempt = await tx.mockPaymentAttempt.findUnique({ where: { id: evidence?.attemptId } });
-    if (!attempt) throw new CheckoutError("not_found", 404);
-    validateEvidence(attempt, evidence);
-    const event = await tx.mockPaymentEvent.findUnique({ where: { id: evidence.eventId } });
-    if (event) {
-      if (event.attemptId !== attempt.id || event.status !== evidence.status) throw new CheckoutError("invalid_evidence", 409);
-      return;
-    }
-    await tx.mockPaymentEvent.create({ data: { id: evidence.eventId, attemptId: attempt.id, status: evidence.status } });
-    if (terminal(attempt.status) || evidence.status === "pending") return;
-    await tx.mockPaymentAttempt.update({ where: { id: attempt.id }, data: { status: evidence.status } });
-    if (evidence.status === "succeeded") await tx.mockCheckout.update({ where: { id: attempt.checkoutId }, data: { status: "succeeded" } });
-  });
-}
-
-async function saveProviderPayment(attempt: MockPaymentAttempt, payment: ProviderPayment) {
-  if (typeof payment?.providerId !== "string" || !payment.providerId.startsWith("MOCK-") || !validInstructions(attempt.method, attempt.id, payment.instructions)) throw new CheckoutError("invalid_evidence", 409);
-  validateEvidence({ ...attempt, providerId: payment.providerId }, payment);
-  await atomic(async tx => {
-    const saved = await tx.mockPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id } });
-    if (saved.providerId && saved.providerId !== payment.providerId) throw new CheckoutError("invalid_evidence", 409);
-    await tx.mockPaymentAttempt.update({ where: { id: attempt.id }, data: { providerId: payment.providerId, initializationStatus: "ready", instructions: jsonInput(payment.instructions) } });
-  });
-  await applyEvidence(payment);
-}
-
-async function initialize(attempt: MockPaymentAttempt) {
-  try {
-    const payment = await provider("initialize", { attemptId: attempt.id, method: attempt.method, environment: "simulation", amount: attempt.amount, currency: attempt.currency, expiresAt: attempt.expiresAt.toISOString() });
-    await saveProviderPayment(attempt, payment);
-  } catch {
-    await prisma.mockPaymentAttempt.updateMany({ where: { id: attempt.id, initializationStatus: "initializing" }, data: { initializationStatus: "reconciliation_required" } });
-  }
-}
-
-export async function reconcileAttempt(attempt: MockPaymentAttempt) {
-  if (terminal(attempt.status)) return;
-  try {
-    const payment = await provider("status", { attemptId: attempt.id });
-    await saveProviderPayment(attempt, payment);
-  } catch (error) {
-    if (error instanceof CheckoutError && error.code === "provider_not_found" && attempt.createdAt.getTime() + 15000 < Date.now()) {
-      // The provider durably confirms no initialization; preserve the original ID/deadline.
-      await initialize(attempt);
-    } else throw error;
-  }
+async function refreshAttempt(attempt: MockPaymentAttempt) {
+  if (terminal(attempt.status)) return false;
+  const status = attempt.expiresAt.getTime() <= Date.now() ? "expired" : !isSampleAttempt(attempt) ? "cancelled" : null;
+  if (!status) return false;
+  await prisma.mockPaymentAttempt.updateMany({ where: { id: attempt.id, status: "pending" }, data: { status } });
+  return true;
 }
 
 async function present(id: string, owner: Owner) {
-  const record = await findCheckout(id, owner);
+  let record = await findCheckout(id, owner);
+  if (record.attempts[0] && await refreshAttempt(record.attempts[0])) record = await findCheckout(id, owner);
   const attempt = record.attempts[0];
   const expired = record.expiresAt.getTime() <= Date.now();
   const status = record.status === "succeeded" ? "succeeded" : attempt?.status ?? "pending";
@@ -106,7 +65,7 @@ async function present(id: string, owner: Owner) {
     expiresAt: record.expiresAt.toISOString(), serverTime: new Date().toISOString(),
     canRetry: !expired && ["failed", "cancelled"].includes(attempt?.status),
     attempt: attempt ? { id: attempt.id, method: attempt.method, status: attempt.status, initializationStatus: attempt.initializationStatus, providerId: attempt.providerId,
-      instructions: !expired && attempt.status === "pending" && attempt.initializationStatus === "ready" ? attempt.instructions : null } : null,
+      instructions: !expired && attempt.status === "pending" && attempt.initializationStatus === "ready" && isSampleAttempt(attempt) ? attempt.instructions : null } : null,
   };
 }
 
@@ -137,7 +96,8 @@ async function claim(input: Record<string, unknown>, owner: Owner, retry: boolea
     }
     const snapshot = checkout.snapshot as unknown as Snapshot;
     const previous = await tx.mockPaymentAttempt.findFirst({ where: { checkoutId: checkout.id }, orderBy: { sequence: "desc" } });
-    const attempt = await tx.mockPaymentAttempt.create({ data: { checkoutId: checkout.id, idempotencyKey, requestHash, sequence: (previous?.sequence ?? 0) + 1, method: selectedMethod, amount: snapshot.amount, currency: snapshot.currency, expiresAt: checkout.expiresAt } });
+    const attemptId = randomUUID();
+    const attempt = await tx.mockPaymentAttempt.create({ data: { id: attemptId, providerId: `SAMPLE-${attemptId}`, initializationStatus: "ready", instructions: sampleInstructions(selectedMethod, attemptId), checkoutId: checkout.id, idempotencyKey, requestHash, sequence: (previous?.sequence ?? 0) + 1, method: selectedMethod, amount: snapshot.amount, currency: snapshot.currency, expiresAt: checkout.expiresAt } });
     return { attempt, fresh: true };
   });
 }
@@ -146,17 +106,20 @@ export async function checkoutOperation(input: Record<string, unknown>, context:
   const owner: Owner = { shop: context.shop, customerId: context.customerId, capabilityHash: capabilityHash(input.capability) };
   const operation = input.operation;
   if (operation === "quote") {
-    const snapshot = await catalogQuote(input.lines, context.graphql);
+    if (input.source !== undefined && !["sample", "catalog"].includes(String(input.source))) throw new CheckoutError("invalid_source");
+    if (input.source === "sample" && process.env.MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED !== "true") throw new CheckoutError("sample_catalog_disabled", 403);
+    const snapshot: Snapshot = input.source === "sample" ? {
+      items: [{ variantId: "sample-jersey-black-m", title: "No.36 Mesh Jersey / Black / M (sample)", quantity: 1, price: "35000.00", total: "35000.00" }],
+      amount: "35000.00", currency: "MMK", shipping: "0.00", tax: "0.00",
+    } : await catalogQuote(input.lines, context.graphql);
     const quote = await prisma.mockQuote.create({ data: { ...owner, snapshot: jsonInput(snapshot), expiresAt: new Date(Date.now() + 5 * 60000) } });
     return { mock: true, quoteId: quote.id, snapshot, expiresAt: quote.expiresAt.toISOString() };
   }
   if (operation === "create" || operation === "retry") {
     const result = await claim(input, owner, operation === "retry");
-    if (result.fresh) await initialize(result.attempt);
-    else { try { await reconcileAttempt(result.attempt); } catch { /* Keep the persisted unresolved attempt. */ } }
     return present(result.attempt.checkoutId, owner);
   }
-  if (!["status", "cancel", "simulate"].includes(String(operation))) throw new CheckoutError("invalid_operation");
+  if (!["status", "cancel"].includes(String(operation))) throw new CheckoutError("invalid_operation");
   let checkoutId = input.checkoutId;
   if (operation === "status" && !checkoutId) {
     const pending = await prisma.mockPaymentAttempt.findUnique({ where: { idempotencyKey: identifier(input.idempotencyKey) } });
@@ -167,31 +130,21 @@ export async function checkoutOperation(input: Record<string, unknown>, context:
   const checkout = await findCheckout(id, owner);
   const attempt = checkout.attempts[0];
   if (!attempt) throw new CheckoutError("not_found", 404);
-  if (operation === "status") {
-    try { await reconcileAttempt(attempt); }
-    catch { return { ...await present(id, owner), reconnecting: true }; }
-  } else {
-    if (identifier(input.attemptId) !== attempt.id || terminal(attempt.status)) throw new CheckoutError("attempt_unavailable", 409);
-    const outcome = operation === "cancel" ? "cancelled" : input.outcome;
-    if (!["succeeded", "failed", "cancelled", "expired", "delayed"].includes(String(outcome))) throw new CheckoutError("invalid_outcome");
-    await reconcileAttempt(attempt);
-    const payment = await provider(String(operation), { attemptId: attempt.id, outcome });
-    await saveProviderPayment(attempt, payment);
+  if (operation === "cancel" && identifier(input.attemptId) !== attempt.id) throw new CheckoutError("attempt_unavailable", 409);
+  await refreshAttempt(attempt);
+  if (operation === "cancel") {
+    await prisma.mockPaymentAttempt.updateMany({ where: { id: attempt.id, status: "pending", expiresAt: { gt: new Date() } }, data: { status: "cancelled" } });
+    await refreshAttempt(await prisma.mockPaymentAttempt.findUniqueOrThrow({ where: { id: attempt.id } }));
   }
   return present(id, owner);
 }
 
+// Retain the protected scheduler endpoint for local expiry; no provider calls or deletion.
 export async function sweep() {
-  const deadline = Date.now() + 20000;
-  try { await provider("dispatch"); } catch { /* Provider callbacks do not block independent status reconciliation. */ }
   const pending = await prisma.mockPaymentAttempt.findMany({ where: { status: "pending", nextReconcileAt: { lte: new Date() } }, orderBy: { nextReconcileAt: "asc" }, take: 50 });
-  let recovered = 0;
   for (const attempt of pending) {
-    if (Date.now() >= deadline) break;
-    try { await reconcileAttempt(attempt); recovered++; } catch { /* Retry on the next scheduled invocation. */ }
+    await refreshAttempt(attempt);
     await prisma.mockPaymentAttempt.update({ where: { id: attempt.id }, data: { nextReconcileAt: new Date(Date.now() + 60000) } });
   }
-  const cutoff = new Date(Date.now() - 7 * 86400000);
-  await prisma.mockQuote.deleteMany({ where: { createdAt: { lt: cutoff } } });
-  return { mock: true, checked: pending.length, recovered };
+  return { mock: true, checked: pending.length };
 }

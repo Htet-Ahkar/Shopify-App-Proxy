@@ -1,3 +1,7 @@
+> Current source update (6 November 2026): checkout now returns local sample instructions. Older provider/hosted setup below is historical and is not required for the new checkout. The backend and unpublished Dev Preview are now deployed; no remote simulator resources were removed. See the deployment runbook for the active release. The optional sweep uses only `MOCK_PAYMENT_SWEEP_SECRET` for local expiry. Keep Shopify/database configuration and checkout flags; provider/callback/hosted variables are unused.
+>
+> Theme QR setup: in `coco-original`, run `npm ci`, `npm run build:checkout-qr`, and `npm run test:checkout-qr`. The pinned development tools are qrcode 1.5.4, esbuild 0.25.12, jsQR 1.4.0 and pngjs 5.0.0; only the generated local JS asset is shipped. Context7 MCP supplies library docs; Shopify skill/Dev MCP or Theme Check validates Liquid; browser MCP/temporary Playwright checks navigation and QR downloads. Supabase/Postgres skills apply to persistence changes; Supabase/Vercel MCPs and CLIs are needed only for separately authorized remote operations. Setup/account instructions below still apply to those tools. No KBZPay account or payment-provider plugin is needed.
+
 # Agent and developer setup
 
 ## Project boundaries and verified targets
@@ -122,3 +126,25 @@ Read [mock-checkout.md](mock-checkout.md) before enabling the feature. Required 
 New private configuration names: `MOCK_CHECKOUT_ENABLED`, `MOCK_CHECKOUT_SHOP`, `MOCK_PAYMENT_PROVIDER_URL`, `MOCK_PAYMENT_PROVIDER_KEY`, `MOCK_PAYMENT_CALLBACK_SECRET`, `MOCK_PAYMENT_SWEEP_SECRET`; Edge Function additionally needs `MOCK_PROVIDER_DATABASE_URL` and `MOCK_PAYMENT_CALLBACK_URL`. Blank templates are committed in the app root and function directory; values belong in private host/function secret stores. Configure Vault with the sweep URL/secret and install the provided cron script only in isolated preview. Both app database URLs must point to that same isolated database. Do not run a dev server automatically.
 
 Reproducible checkout test tooling is installed with `npm ci`: pinned PGlite 0.3.14 executes the PostgreSQL migration/privilege checks, and jsdom 26.1.0 runs DOM customer journeys without a development server. See [verification evidence](mock-checkout-verification.md) for remaining browser/preview requirements.
+
+
+## Current deployment tooling and account access
+
+Vercel MCP is now connected to team `team_O0XCmC5sCq40f01K1Syixi6i` and project `prj_nfPhXdZL2HDDIPRT3ARxMK0SZlJe`; its earlier unavailable-tool note is historical. If access returns 403, use `authorize_team_access` for this team and show the returned approval link, then retry the same connection. Do not switch teams or ask for account reconnection unnecessarily. Environment and alias APIs must remain Preview-scoped unless the user explicitly approves a Production rollout.
+
+Supabase MCP handles admin migration/verification and Edge deployment. It lacks function-secret setting, so the existing privately stored Supabase CLI credential authenticated the Management API for four new mock-specific secrets. Token/secret values are never printed or committed. New provider/runtime roles, Vault names, the shared-database exception, exact Preview alias and deployed verification are in [mock-checkout-deployment.md](mock-checkout-deployment.md). No paid branch was created. The source migration needs an administrator for provider-schema/role creation; keep runtime privileges restricted.
+
+
+Connected sample checkout adds four app configuration names: `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED`, `MOCK_PAYMENT_HOSTED_SECRET`, `MOCK_PAYMENT_HOSTED_ORIGIN`, `MOCK_PAYMENT_RETURN_ORIGINS`. The provider receives the hosted secret/origin through private Supabase Function secrets. Existing Context7, Shopify, Supabase, Vercel and browser MCP tooling/skills remain required with their documented account targets; no new plugin, library dependency or schema migration is required. Hosted routes use React Router resource responses and Node crypto. Include the provider's `_shared/hosted-token.ts` file in Edge Function deployment. Configure exact return origins including development loopback as needed; never expose secrets to theme/browser code.
+
+
+### Isolated live-browser fallback
+
+Chrome DevTools MCP was disconnected and Playwright MCP lacked its system Chrome during the 6 November rollout. A temporary Playwright 1.58.2 installation supplied headless Chromium for desktop/mobile acceptance against the deployed app/theme. No app runtime dependency or development server is involved. Setup in a temporary directory:
+
+```sh
+npm install --prefix /tmp/coco-browser-verification --ignore-scripts --no-audit --no-fund playwright@1.58.2
+PLAYWRIGHT_BROWSERS_PATH=/tmp/coco-browser-verification/browsers node /tmp/coco-browser-verification/node_modules/playwright/cli.js install chromium
+```
+
+Set the same `PLAYWRIGHT_BROWSERS_PATH` when running verification scripts. Keep signed hosted URLs, capabilities and temporary private configuration out of traces/logs/screenshots and remove temporary secret files after deployment. Use only demo details and exact disposable record IDs for cleanup. The active app deployment/provider/theme targets and rollback instructions are in `mock-checkout-deployment.md`.

@@ -1,0 +1,101 @@
+# COCO connected mock checkout deployment
+
+## Deployed proxy sample responses — 6 November 2026
+
+This rollout supersedes the hosted-simulator deployment notes below. The user explicitly requested deployment of the completed implementation.
+
+- Production backend: `dpl_5in7PbcmySBxuDExqUsxaA1sWE71`, READY at https://shopify-app-proxy-htetahkars-projects.vercel.app; immutable URL https://shopify-app-proxy-8j25k71o0-htetahkars-projects.vercel.app. Target: existing COCO project `prj_nfPhXdZL2HDDIPRT3ARxMK0SZlJe`, team `team_O0XCmC5sCq40f01K1Syixi6i`.
+- Deployed the current local working files, including unstaged removals and the new sample-instructions module, through authenticated Vercel MCP. Source payload SHA256: `da3cdffa2f10e917348882b20c821fabb0603da31784f38778fc01b9344e84bc`. No Git push/commit or staging changes were made. Commit this source before future Git deployments to avoid reverting the release.
+- Deployment-only build override: `npx prisma generate && npm run build`, install `npm ci`, Node 22 / React Router. No migrations, environment-variable changes, new database resources, provider deployment, or remote simulator-resource removal were performed.
+- Shopify CLI uploaded nine checkout assets/snippets/sections/template/locale files to unpublished Dev Preview `187388330168` with `--nodelete` and explicit `--only` paths. Settings were excluded. Before/after settings downloads matched byte-for-byte for Dev Preview and published theme `179650658488`; the published checkout flag remains absent/default false, and Dev Preview remains enabled. No Page assignment or theme publication changed.
+- Verified through real Shopify-signed proxy calls: PWA returns exactly `https://www.kbzpay.com/en`; MMQR returns raw non-payable sample text, never `qrImage`. New attempts remain pending. Desktop PWA navigation/Back/reload, mobile QR generation/download decoding/reload/retry, cancellation, and rejection of `simulate` all passed. Hosted/callback routes return 404 and direct unsigned proxy requests remain rejected. The external KBZPay destination was intercepted during browser verification; no payment was initiated. Test checkouts were cancelled and their history retained.
+- Browser verification observed existing global `gsap is not defined` errors, also reproduced read-only on the published theme. An unlocated `Unexpected token '<'` event was observed during the PWA journey. Checkout behavior checks passed; this is not a claim that the whole theme is free of JavaScript errors.
+- Existing Supabase simulator/function/secrets/Vault/cron remain deployed; the new app never calls that simulator. The retained protected sweep endpoint performs local expiry only. Remote resource retirement is separate work.
+- Required tooling remains authenticated Vercel MCP (source deployment/status/build logs), Shopify CLI with the COCO store login (theme list/pull/push), Context7 MCP and Vercel/Shopify skills (current deployment/CLI docs), and the documented temporary Playwright 1.58.2/Chromium fallback (browser acceptance). Setup/dependencies/account checks remain in `docs/agent-setup.md`. No dev server was started.
+
+Preview: https://dut44m-vn.myshopify.com/pages/checkout?preview_theme_id=187388330168&view=checkout&demo=sample
+
+Rollback: disable checkout on Dev Preview first. For a backend rollback, use prior deployment `dpl_Dg4kNWhNDNTq1Yff5sB6UQpNgG7R` only with its compatible hosted-simulator theme and existing matching provider configuration. Do not roll back only one side. Temporary pre-upload files are under `/tmp/coco-sample-release/preview-before`; this is a session-local backup, not a durable artifact. Never publish the checkout demo to the live theme as part of rollback.
+
+## Active rollout — 6 November 2026
+
+The user explicitly approved the exact Production Vercel/Supabase destinations. The connected mock checkout is now deployed and its guest storefront journeys passed. This section supersedes the historical Preview rollout and approval blockers below.
+
+- Active app: https://shopify-app-proxy-htetahkars-projects.vercel.app
+- Ready Production deployment: `dpl_Dg4kNWhNDNTq1Yff5sB6UQpNgG7R`, immutable host `shopify-app-proxy-p3ebmd5ie-htetahkars-projects.vercel.app`.
+- Source: reviewed local working tree, not an older Git commit. Snapshot SHA256 before the subsequent documentation updates: `c41176cd11d90f85e77a126386097460d3df1eb432b2f08e66cc72214de2b6e3`. Commit all local implementation/fix changes before future Git deployments to prevent regression; staged changes were preserved.
+- Provider: COCO Supabase project `jsiqibwdsvvhwhlvhisj`, `mock-payments` version 7, hash `4cab34dfbe2ac8bd223840cefa90fe6d1a0e5e43657327e6d1295a56f6c0c993`.
+- Production has ten mock configuration variables: enabled/shop/sample-catalog flags, provider URL/key, callback secret, sweep secret, hosted secret/origin, and return-origin allowlist. Existing Shopify identity, scope, database and POC variables were preserved. Secrets are stored only in Vercel, Supabase Function secrets and Vault.
+- Provider callbacks and Vault reconciliation URL now target Production. Minute cron remained active and returned 200. Old dedicated backend Preview credentials no longer match the rotated provider key; that backend Preview is retired for payment testing. The unpublished theme uses Shopify's existing Production app proxy.
+- The installed App Proxy was opened and Shopify saved a valid offline session. Real forwarding through `/apps/proxy/mock-checkout` returned a server-owned 35,000 MMK sample quote. No fabricated session or authentication bypass was used.
+- Checkout assets/configuration were uploaded only to unpublished Dev Preview `187388330168`. Published theme `179650658488` was not changed. Global Page template assignment remains unchanged; feature-enabled cart/drawer links explicitly use `?view=checkout`.
+- Try the connected sample: https://dut44m-vn.myshopify.com/pages/checkout?preview_theme_id=187388330168&view=checkout&demo=sample
+
+Browser evidence: guest desktop PWA completed signed proxy quote/create, navigation to the provider-issued hosted URL, server confirmation, return to COCO, receipt and receipt reload. Guest mobile MMQR completed quote/create, provider-generated PNG display, payment reload recovery, branded QR download, backend demo approval, receipt and receipt reload. Hosted PWA was additionally checked at mobile viewport; no horizontal overflow or delivery information appeared on the hosted page. Delayed MMQR was recovered by cron and its signed outbox callback was delivered without browser polling. Disposable test payments and their provider/outbox records were removed by exact fixture identities. No real payment, Shopify order, stock, cart mutation, email or fulfillment occurred.
+
+Live browser testing found that `Referrer-Policy: no-referrer` makes form Origin null. Hosted POST now accepts either the exact configured public HTTPS Origin or null only with browser-controlled `Sec-Fetch-Site: same-origin`; cross-site requests remain rejected. The configured public origin also determines redirect destinations behind Vercel. Transient Prisma errors observed after approval are handled by a 303 to an authenticated GET status reconciliation, rather than declaring success or falsely showing failure. The redacted diagnostic records only the error class. Do not remove token/evidence validation or treat return parameters as confirmation.
+
+Rollback: disable the feature on Dev Preview first; do not modify the published theme. A coordinated backend/provider rollback must preserve matching credentials, valid frozen instructions, callback destination and Vault sweep configuration. The existing COCO database remains the explicitly approved shared database; no paid branch, additional database or schema migration was created.
+
+## Historical deployment records
+
+
+## Current state
+
+The backend Preview is deployed and verified. No paid Supabase branch was created. The user explicitly declined its quoted $0.01344/hour cost and approved using the existing COCO database instead. This overrides the earlier separate-preview-database requirement for this setup; app and mock records share the existing project, with separate private provider tables and restricted roles.
+
+- Vercel project: `htetahkars-projects/shopify-app-proxy` (`prj_nfPhXdZL2HDDIPRT3ARxMK0SZlJe`).
+- Preview: https://shopify-app-proxy-coco-mock-preview-htetahkars-projects.vercel.app
+- Ready Preview deployment: `dpl_Ux1rqYeoiZFpytQJT4RSJhG8tTnr`, app commit `a9f5dfa06280290da09e8a02199dcbeb69166c83`.
+- Supabase project: `jsiqibwdsvvhwhlvhisj`, COCO ORIGINAL, organization `hxmilvmgqyhdqbsfejmz`.
+- Mock provider: `https://jsiqibwdsvvhwhlvhisj.supabase.co/functions/v1/mock-payments`, deployed version 5. Its callback delivery fix is present in the local function source and was deployed directly with MCP; commit that source change before later releases to avoid reverting it.
+- Production Vercel environment IDs/keys were compared before and after: unchanged. No Production deployment was promoted, and no published theme or Shopify page setting was changed.
+
+## Configuration applied
+
+Twelve Preview-only variables were added: `SHOPIFY_API_KEY`, `SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`, `SCOPES`, `DATABASE_URL`, `DIRECT_URL`, `MOCK_CHECKOUT_ENABLED`, `MOCK_CHECKOUT_SHOP`, `MOCK_PAYMENT_PROVIDER_URL`, `MOCK_PAYMENT_PROVIDER_KEY`, `MOCK_PAYMENT_CALLBACK_SECRET`, and `MOCK_PAYMENT_SWEEP_SECRET`. The app URL is the dedicated Preview alias above; checkout is enabled only in this backend Preview environment. Existing Production variables and existing POC variables were preserved.
+
+Four Edge Function secrets are configured: `MOCK_PROVIDER_DATABASE_URL`, `MOCK_PAYMENT_PROVIDER_KEY`, `MOCK_PAYMENT_CALLBACK_SECRET`, and `MOCK_PAYMENT_CALLBACK_URL`. The callback points to Preview `/webhooks/mock-payments`. Values are not documented or committed.
+
+Private app tables in `shopify` remain owned by `coco_app`. Provider tables are in `coco_mock_provider`, with RLS policies for the non-login `coco_mock_provider_runtime` service role. Login `coco_mock_provider_login` inherits only that provider role. Login `coco_mock_preview_app` inherits the existing `coco_app` role for the Preview connection. No global schema/role creation privileges were granted to the runtime app.
+
+The initial auto-deployment failed because `coco_app` cannot create a database schema. The exact mock migration was completed through the Supabase admin connection, preserving app-table ownership. Prisma's supported `migrate resolve --applied 20261105000000_mock_checkout` repaired its failed migration history. A temporary migration-history-only login was removed afterward. Future fresh environments require the same privileged setup or an appropriate migration administrator; do not broaden runtime privileges.
+
+Supabase `pg_cron` and `pg_net` are installed; Vault was already present. Vault entries `coco_mock_sweep_url` and `coco_mock_sweep_secret` configure the active minute job `coco-mock-payment-reconciliation`. Its URL points to Preview `/internal/mock-payments-sweep`. Scheduler HTTP responses were verified as 200.
+
+## Runtime verification
+
+- Missing/wrong provider keys: 401; valid key plus unknown attempt: 404, proving restricted provider database access works.
+- Unsigned app callback and unauthenticated sweep: 401; authenticated Preview sweep: 200.
+- Both KBZPay PWA and MMQR initialization returned valid mock instructions; MMQR returned a non-payable PNG QR.
+- App reconciliation restored saved initialization records.
+- KBZPay immediate simulated approval and MMQR delayed approval reached succeeded checkout/payment states; the scheduled job resolved the delayed result without browser polling.
+- Signed callbacks returned 200. Both durable outbox records were verified delivered.
+- A real callback took 3.41 seconds, exceeding the original 1.5-second timeout. The deployed fix allows eight seconds and uses `EdgeRuntime.waitUntil` for immediate background dispatch, while persisted outbox leases/retries and cron remain the durable recovery path. Provider responses no longer wait for callback delivery.
+- All 44 local tests and ESLint passed after this fix; Deno checked the function successfully.
+- Disposable mock quote/checkout/attempt/provider/outbox records were removed after verification. No real payment, Shopify order/draft order, inventory change, or fulfillment was created.
+
+Security advisors report only the expected informational `RLS Enabled No Policy` entries for the private owner-only app/session tables. Their public grants are revoked and their schemas remain private; do not add public policies to silence this informational check. [Advisor explanation](https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy).
+
+## Remaining storefront connection
+
+The backend Preview is not a completed storefront rollout:
+
+- No Shopify session currently exists in `shopify.Session`; the intended app must be opened/authorized before catalog quoting works.
+- The tracked Shopify app/proxy configuration still targets the existing Production host. Connecting the storefront to the new backend requires an explicitly approved Production-backend update or a separately configured Preview app/proxy. Do not silently repoint the shared app proxy or promote Preview.
+- The existing published Shopify Page `gid://shopify/Page/164551459000`, handle `checkout`, reports template suffix `Default page`; it has not been changed to `checkout`.
+- Theme changes remain staged locally. They were not uploaded or enabled on any theme during this environment-setup task. Keep the published theme's mock setting disabled.
+- Register the Preview OAuth callback if using Preview authorization, complete page/template/proxy wiring, and run mobile/desktop storefront acceptance before enabling Dev Preview.
+
+Automatic approval review rejected Production environment changes as outside the approved Preview rollout. It also rejected an ambiguous deployment request. The documented Vercel API creates Preview when target is omitted; deploying a pinned commit without production-branch context produced `target: null`, which was verified as Preview. No Production promotion was performed.
+
+
+## Connected sample / hosted PWA rollout — 6 November 2026
+
+The user selected and requested implementation against the existing app backend. Source now adds backend-owned sample quotes and provider-issued hosted PWA URLs. There were zero active app/provider attempts and zero Shopify sessions at the pre-rollout check. The published theme (179650658488) was downloaded read-only and its mock checkout flag is false. Dev Preview is unpublished theme 187388330168. Page template assignment remains unchanged; preview the checkout with `view=checkout`, adding `demo=sample` on a public preview hostname.
+
+Automatic approval review rejected the proposed Vercel upsert into Production/Preview because it requires explicit authorization for Production environment changes. That call did not apply the new values. No new app deployment, provider deployment, callback switch, cron switch or theme upload has been performed for this revision. The previously documented provider v5 and ready Preview deployment remain the deployed versions. Do not represent the connected sample journey as live.
+
+Pending authorized rollout: set the new sample/hosted variables plus existing mock provider/callback/sweep variables on Production; stage/deploy the reviewed local app source rather than the older Git commit; configure matching private provider API key, callback secret, hosted secret/origin and Production callback destination; update Vault sweep URL/secret to Production. Recheck active attempts before switching shared provider configuration, draining any that appear. Existing Production Shopify identity and database variables must remain unchanged. Verify callback/status/evidence and cron, authorize the intended Shopify app to populate its offline session, then enable/upload only Dev Preview. Keep the live theme disabled. Never paste or log credential values. No paid branch or new database migration is needed.
+
+Required app environment names: `MOCK_CHECKOUT_ENABLED`, `MOCK_CHECKOUT_SHOP`, `MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED`, `MOCK_PAYMENT_PROVIDER_URL`, `MOCK_PAYMENT_PROVIDER_KEY`, `MOCK_PAYMENT_CALLBACK_SECRET`, `MOCK_PAYMENT_SWEEP_SECRET`, `MOCK_PAYMENT_HOSTED_SECRET`, `MOCK_PAYMENT_HOSTED_ORIGIN`, `MOCK_PAYMENT_RETURN_ORIGINS`. Supabase retains `MOCK_PROVIDER_DATABASE_URL` and receives matching provider key/callback secret plus hosted secret/origin and `MOCK_PAYMENT_CALLBACK_URL`. Allowed return origins must enumerate the COCO storefront and the development loopback origins actually used. Rotate secrets through the platforms; never commit private deployment files.
