@@ -1,3 +1,5 @@
+import { logDemoSubmission } from "./demo-activity.server";
+import { shippingQuote } from "./royal-express.server";
 import { randomUUID } from "node:crypto";
 import { Prisma, type MockPaymentAttempt } from "@prisma/client";
 import prisma from "../db.server";
@@ -22,7 +24,7 @@ async function catalogQuote(input: unknown, graphql: Graphql): Promise<Snapshot>
   const items = lines(input);
   const response = await graphql(`query MockCheckoutCatalog($ids: [ID!]!) {
     shop { currencyCode }
-    nodes(ids: $ids) { ... on ProductVariant { id title price product { title status } } }
+    nodes(ids: $ids) { ... on ProductVariant { id title price media(first: 1) { nodes { preview { image { url } } } } product { title status featuredMedia { preview { image { url } } } } } }
   }`, { variables: { ids: items.map(item => `gid://shopify/ProductVariant/${item.variantId}`) } });
   const result = await response.json();
   if (!response.ok || result.errors || !result.data?.shop?.currencyCode || !Array.isArray(result.data.nodes)) throw new CheckoutError("catalog_unavailable", 503);
@@ -32,7 +34,7 @@ async function catalogQuote(input: unknown, graphql: Graphql): Promise<Snapshot>
     const variant = result.data.nodes[index];
     if (!variant || variant.id !== `gid://shopify/ProductVariant/${item.variantId}` || variant.product?.status !== "ACTIVE" || typeof variant.price !== "string") throw new CheckoutError("item_unavailable", 409);
     const price = money(variant.price);
-    return { ...item, title: `${variant.product.title}${variant.title === "Default Title" ? "" : ` / ${variant.title}`}`, price: decimal(price), total: decimal(price * BigInt(item.quantity)) };
+    return { ...item, image: variant.media?.nodes?.[0]?.preview?.image?.url || variant.product.featuredMedia?.preview?.image?.url || undefined, productTitle: variant.product.title, variantTitle: variant.title === "Default Title" ? "" : variant.title, title: `${variant.product.title}${variant.title === "Default Title" ? "" : ` / ${variant.title}`}`, price: decimal(price), total: decimal(price * BigInt(item.quantity)) };
   });
   const total = products.reduce((sum, item) => sum + money(item.total), 0n);
   if (total <= 0n || total > 99999999999999n) throw new CheckoutError("invalid_amount");
@@ -104,7 +106,7 @@ async function claim(input: Record<string, unknown>, owner: Owner, retry: boolea
     if (existing) {
       if (!owned(existing.checkout, owner)) throw new CheckoutError("not_found", 404);
       if (existing.requestHash !== requestHash) throw new CheckoutError("idempotency_conflict", 409);
-      return { attempt: existing, fresh: false };
+      return { attempt: existing, fresh: false, activity: null };
     }
     if (process.env.KBZPAY_ACCEPT_NEW_PAYMENTS === "false") throw new CheckoutError("payment_unavailable", 503);
     const gateway = configuration();
@@ -118,6 +120,10 @@ async function claim(input: Record<string, unknown>, owner: Owner, retry: boolea
       if (!quote || !owned(quote, owner)) throw new CheckoutError("not_found", 404);
       if (quote.expiresAt.getTime() <= Date.now()) throw new CheckoutError("quote_expired", 409);
       if (await tx.mockCheckout.findUnique({ where: { quoteId: quote.id } })) throw new CheckoutError("quote_used", 409);
+      const frozen = quote.snapshot as unknown as Snapshot;
+      if (!frozen.shippingSelection) throw new CheckoutError("shipping_required");
+      if (normalizedDelivery!.region !== frozen.shippingSelection.state || normalizedDelivery!.city !== frozen.shippingSelection.city
+        || normalizedDelivery!.country !== "Myanmar") throw new CheckoutError("shipping_changed", 409);
       checkout = await tx.mockCheckout.create({ data: { ...owner, quoteId: quote.id, reference: `COCO-MOCK-${randomUUID().slice(0, 8).toUpperCase()}`, snapshot: jsonInput(quote.snapshot), delivery: jsonInput(normalizedDelivery), expiresAt: new Date(Date.now() + 15 * 60000) } });
     }
     const snapshot = checkout.snapshot as unknown as Snapshot;
@@ -126,7 +132,7 @@ async function claim(input: Record<string, unknown>, owner: Owner, retry: boolea
     const previous = await tx.mockPaymentAttempt.findFirst({ where: { checkoutId: checkout.id }, orderBy: { sequence: "desc" } });
     const attemptId = randomUUID();
     const attempt = await tx.mockPaymentAttempt.create({ data: { id: attemptId, environment: gateway.mode, gateway: jsonInput(gateway), merchantOrderId: `COCO_${attemptId.replaceAll("-", "")}`, initializationStatus: "reconciliation_required", nextReconcileAt: new Date(Date.now() + 10000), checkoutId: checkout.id, idempotencyKey, requestHash, sequence: (previous?.sequence ?? 0) + 1, method: selectedMethod, amount: snapshot.amount, currency: snapshot.currency, expiresAt: checkout.expiresAt } });
-    return { attempt, fresh: true };
+    return { attempt, fresh: true, activity: { snapshot, reference: checkout.reference } };
   });
 }
 
@@ -136,16 +142,21 @@ export async function checkoutOperation(input: Record<string, unknown>, context:
   if (operation === "quote") {
     if (input.source !== undefined && !["sample", "catalog"].includes(String(input.source))) throw new CheckoutError("invalid_source");
     if (input.source === "sample" && process.env.MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED !== "true") throw new CheckoutError("sample_catalog_disabled", 403);
-    const snapshot: Snapshot = input.source === "sample" ? {
+    const catalog: Snapshot = input.source === "sample" ? {
       items: [{ variantId: "sample-jersey-black-m", title: "No.36 Mesh Jersey / Black / M (sample)", quantity: 1, price: "35000.00", total: "35000.00" }],
       amount: "35000.00", currency: "MMK", shipping: "0.00", tax: "0.00",
     } : await catalogQuote(input.lines, context.graphql);
+    const snapshot = shippingQuote(catalog, input.shipping);
     const quote = await prisma.mockQuote.create({ data: { ...owner, snapshot: jsonInput(snapshot), expiresAt: new Date(Date.now() + 5 * 60000) } });
     return { mock: true, quoteId: quote.id, snapshot, expiresAt: quote.expiresAt.toISOString() };
   }
   if (operation === "create" || operation === "retry") {
     const result = await claim(input, owner, operation === "retry");
     if (result.fresh) {
+      if (result.activity) logDemoSubmission({
+        ...result.activity, method: result.attempt.method as "kbzpay" | "mmqr",
+        createdAt: result.attempt.createdAt, retry: operation === "retry",
+      });
       try {
         const initialized = await initialize(gatewayOf(result.attempt.gateway)!, result.attempt);
         await prisma.mockPaymentAttempt.updateMany({ where: { id: result.attempt.id }, data: { providerId: initialized.providerId, instructions: jsonInput(initialized.instructions), initializationStatus: "ready" } });

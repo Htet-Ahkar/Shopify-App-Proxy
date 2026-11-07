@@ -110,8 +110,7 @@ export async function initialize(gateway: Gateway, payment: Payment): Promise<{ 
 }
 export async function query(gateway: Gateway, payment: Payment): Promise<Evidence> {
   if (gateway.mode === "simulation") {
-    const due = payment.createdAt.getTime() + 10000;
-    return { status: Date.now() >= due && due <= payment.expiresAt.getTime() ? "succeeded" : Date.now() >= payment.expiresAt.getTime() ? "expired" : "pending" };
+    return { status: Date.now() >= payment.expiresAt.getTime() ? "expired" : "pending" };
   }
   const fields = await request(gateway, "queryorder", { merch_order_id: payment.merchantOrderId });
   identity(fields, gateway, payment);

@@ -12,6 +12,7 @@ const QRCode = themeRequire('qrcode');
 const hasTheme = fs.existsSync(path.join(themePath, 'snippets/custom-checkout.liquid'));
 const pause = () => new Promise(resolve => setTimeout(resolve, 0));
 async function until(check) { for (let n = 0; n < 100; n++) { if (check()) return; await pause(); } assert.fail('Journey did not reach the expected state'); }
+const locations = JSON.parse(fs.readFileSync(path.join(themePath, 'assets/royal-express.json'), 'utf8'));
 const snapshot = { items: [{ title: 'COCO Tee / M', quantity: 2, total: '20000.00' }], amount: '20000.00', currency: 'MMK', shipping: '0.00', tax: '0.00' };
 function storefront({ empty = false, loseCreateResponse = false, storage, resumedRecord = null, disabled = false, sample = false, quoteFailure = false, qrRenderer, environment = 'simulation' } = {}) {
   const raw = fs.readFileSync(path.join(themePath, 'locales/en.default.json'), 'utf8');
@@ -26,6 +27,7 @@ function storefront({ empty = false, loseCreateResponse = false, storage, resume
   const dom = new JSDOM(`<!doctype html><html><body>${markup}</body></html>`, { virtualConsole, url: sample ? 'http://127.0.0.1:9292/pages/checkout?view=checkout' : 'https://coco.test/pages/checkout', runScripts: 'outside-only', pretendToBeVisual: true });
   const { window } = dom;
   Object.defineProperty(window, 'crypto', { value: webcrypto });
+  window.matchMedia = () => ({ matches: false, addEventListener() {} });
   window.AbortSignal.timeout = () => new window.AbortController().signal;
   if (storage) window.sessionStorage.setItem('coco:mock-checkout:v1', storage);
   const intervals = [];
@@ -33,8 +35,11 @@ function storefront({ empty = false, loseCreateResponse = false, storage, resume
   window.clearInterval = () => {};
   let record = resumedRecord, creates = 0, calls = [], qrCalls = [];
   window.CocoCheckoutQR = { toDataURL: (payload, options) => { qrCalls.push({ payload, options: structuredClone(options) }); return qrRenderer ? qrRenderer(payload, options) : QRCode.toDataURL(payload, options); } };
+  const cardCalls = [];
+  window.CocoCheckoutQRCard = { render: async input => { cardCalls.push(input); return window.CocoCheckoutQR.toDataURL(input.payload, { type: 'image/png', width: 510, margin: 4, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } }); } };
   window.HTMLImageElement.prototype.decode = async () => {};
   const fetch = async (url, options = {}) => {
+    if (String(url) === '') return Response.json(locations);
     if (String(url).endsWith('cart.js')) { assert.equal(sample, false, 'Sample must never read Shopify cart'); return Response.json({ items: empty ? [] : [{ variant_id: 123, product_title: 'COCO Tee', variant_title: 'M', quantity: 2, original_line_price: 2000000 }], original_total_price: 2000000, currency: 'MMK' }); }
     assert.equal(String(url), '/apps/proxy/mock-checkout');
     const input = JSON.parse(options.body); calls.push(input);
@@ -61,13 +66,16 @@ function storefront({ empty = false, loseCreateResponse = false, storage, resume
   const click = selector => $(selector).click();
   async function details() {
     await until(() => !$('[data-details]').hidden);
-    const values = { name: 'Demo Person', email: 'demo@example.test', phone: '+95912345678', address: 'Demo Street', city: 'Yangon', country: 'Myanmar' };
+    const values = { name: 'Demo Person', email: 'demo@example.test', phone: '+95912345678', address: 'Demo Street', country: 'Myanmar' };
     for (const [key, value] of Object.entries(values)) $(`[name="${key}"]`).value = value;
+    $('[data-state]').value = locations.states[0].id;
+    $('[data-state]').dispatchEvent(new window.Event('change'));
+    $('[data-city]').value = locations.states[0].cities[0].id;
+    $('[data-city]').dispatchEvent(new window.Event('change'));
     assert.equal($('[data-details]').checkValidity(), true);
-    $('[data-details]').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
-    await until(() => !$('[data-review]').hidden && !$('[data-action="create"]').disabled);
+    await until(() => !$('[data-action="create"]').disabled);
   }
-  return { dom, window, $, click, details, intervals, calls: () => calls, creates: () => creates, record: () => record, setRecord: value => { record = value; }, translations, qrCalls };
+  return { dom, window, $, click, details, intervals, calls: () => calls, creates: () => creates, record: () => record, setRecord: value => { record = value; }, translations, qrCalls, cardCalls };
 }
 for (const method of ['kbzpay', 'mmqr']) {
   test(`DOM ${method}: sample instructions, status, cancellation and storage privacy`, { skip: !hasTheme }, async () => {
@@ -84,7 +92,7 @@ for (const method of ['kbzpay', 'mmqr']) {
       else {
         await until(() => !!h.$('[data-qr-image]').getAttribute('src'));
         assert.equal(h.qrCalls[0].payload, h.record().attempt.instructions.qrPayload);
-        assert.equal(JSON.stringify(h.qrCalls[0].options), JSON.stringify({ type: 'image/png', width: 420, margin: 4, errorCorrectionLevel: 'M' }));
+        assert.equal(JSON.stringify(h.qrCalls[0].options), JSON.stringify({ type: 'image/png', width: 510, margin: 4, errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' } }));
         h.click('[data-action="check"]'); await until(() => !h.$('[data-action="check"]').disabled);
         assert.equal(h.qrCalls.length, 1, 'polling reuses cached image');
       }
@@ -182,7 +190,7 @@ test('DOM MMQR download exports a branded card with a non-payable warning', { sk
     h.click('[data-action="download"]');
     await until(() => Boolean(downloaded));
     assert.equal(downloaded, 'COCO-MOCK-TEST-DEMO-MMQR.png');
-    assert.ok(labels.includes(h.translations.non_payable));
+    assert.equal(h.cardCalls.at(-1).warning, h.translations.non_payable);
     assert.equal(h.calls().at(-1).operation, 'status');
   } finally { h.dom.window.close(); }
 });
@@ -246,7 +254,7 @@ test('DOM stale QR generation cannot replace a newer attempt image', async () =>
     await until(() => h.$('[data-qr-image]').src.includes('NEW='));
     renders[0].resolve('data:image/png;base64,OLD='); await pause();
     assert.equal(h.$('[data-qr-image]').src.includes('NEW='), true);
-    assert.equal(h.$('[data-qr-image]').dataset.payload, renders[1].payload);
+    assert.equal(JSON.parse(h.$('[data-qr-image]').dataset.cardKey).payload, renders[1].payload);
   } finally { h.dom.window.close(); }
 });
 for (const url of ['http://www.kbzpay.com/en', 'https://evil.test/en', 'https://www.kbzpay.com/other', 'https://www.kbzpay.com/en?return_to=evil', 'https://user:pass@www.kbzpay.com/en', 'javascript:alert(1)']) {
@@ -270,7 +278,7 @@ test('DOM UAT MMQR renders/downloads UAT labels and shows a verified transaction
     await h.details(); h.$('[name="mock_method"][value="mmqr"]').checked = true; h.click('[data-action="create"]');
     await until(() => !!h.$('[data-qr-image]').getAttribute('src') && !h.$('[data-action="download"]').disabled);
     assert.equal(h.$('.coco-checkout__notice').textContent, h.translations.uat_notice);
-    assert.equal(h.$('[data-non-payable]').hidden, true);
+    assert.equal(h.$('[data-non-payable]').hidden, false);
     assert.equal(h.$('[data-qr-instructions]').textContent, h.translations.uat_qr_instructions);
     assert.equal(h.$('[data-qr-image]').alt, h.translations.uat_qr_alt);
     const labels = []; let downloaded;
@@ -279,8 +287,7 @@ test('DOM UAT MMQR renders/downloads UAT labels and shows a verified transaction
     h.window.HTMLAnchorElement.prototype.click = function () { downloaded = this.download; };
     h.click('[data-action="download"]'); await until(() => Boolean(downloaded));
     assert.equal(downloaded, 'COCO-MOCK-TEST-UAT-MMQR.png');
-    assert.ok(labels.includes(h.translations.uat_qr_warning));
-    assert.ok(!labels.includes(h.translations.non_payable));
+    assert.equal(h.cardCalls.at(-1).warning, h.translations.uat_qr_warning);
     await until(() => !h.$('[data-action="check"]').disabled);
     h.record().status = 'succeeded'; h.record().attempt.transactionId = 'KBZ-VERIFIED-TRANSACTION';
     h.click('[data-action="check"]'); await until(() => !h.$('[data-result]').hidden);

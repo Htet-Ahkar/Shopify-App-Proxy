@@ -1,3 +1,32 @@
+# Demo logs and pending payments deployment — 7 November 2026
+
+The user authorized deploying the companion app. Production deployment `dpl_EcvLQtav2nqZLGShSgk4GEZbkNtE` is **READY**, with canonical URL `https://shopify-app-proxy-htetahkars-projects.vercel.app` and immutable URL `https://shopify-app-proxy-abaf7jvi6-htetahkars-projects.vercel.app`. Verified project `prj_nfPhXdZL2HDDIPRT3ARxMK0SZlJe`, team `team_O0XCmC5sCq40f01K1Syixi6i` (`htetahkars-projects`), React Router, function region `sin1`. Runtime logs report Node.js 26.x selected by the existing broad package engines range; live signed-proxy acceptance passed.
+
+## Source and build
+
+- Deployed 44 current local runtime/configuration files, including the uncommitted demo logger, removal of timed simulated success, and Royal Express data/quote validation. Base Git commit is `55576570b1732d17d1af4f68801c953283bd5edf`; this release is **not** a deployment of that old commit alone.
+- Uploaded manifest fingerprint: `716001b0d5c7971edf4e4d8a7c22757d00091876a3502765b2771bb3fbd0ebd3`, SHA256 over sorted filename, NUL, uploaded bytes, NUL. Environment files, credentials, local agent configuration, docs/tests, node_modules and generated build artifacts were excluded.
+- Deployment-only `vercel.json` build override: `npx prisma generate && npm run build`. Build events confirm client generation and the React Router build; **no migration ran**. Local `vercel.json`, Vercel project settings and environment values were not changed. Production mode was read and verified as `simulation`.
+- Tests: all 78 app tests, typecheck, lint and production build passed before upload.
+
+## Live acceptance
+
+Signed requests through the real Shopify storefront app proxy verified both KBZPay PWA and MMQR demo flows: 35,000 MMK subtotal + 3,000 MMK Royal Express shipping = 38,000 MMK total; duplicate creation reused the saved attempt; both remained pending after more than ten seconds; cancellation and MMQR retry preserved the frozen total. All acceptance attempts were cancelled afterward.
+
+Vercel runtime logs contain exactly three demo entries for acceptance: two **Checkout submitted** entries and one **Payment retry submitted** entry. Reference `COCO-MOCK-1499EAB2` is the KBZPay sample and `COCO-MOCK-61E74AAA` is the MMQR sample/retry. Bangkok timestamps, saved product title/variant, quantity, total and method are readable. The deployment-scoped runtime error/fatal scan was empty after testing. Capabilities, delivery/contact details, payment URLs, QR payloads and secrets are excluded from release evidence and log output.
+
+Open the project's **Logs** tab and search `[COCO DEMO]`; see [demo-activity-logs.md](demo-activity-logs.md). This app-only deployment did **not** upload or enable any Shopify theme. The new checkout design/State-City UI still requires its own Dev Preview upload and storefront acceptance. No real order, fulfillment, UAT transaction, environment change, migration, Git staging/commit/push or dev server was involved.
+
+## Tooling and recovery
+
+Required tools: authenticated Vercel MCP for project/environment-mode read, current-source inline deployment, build/status inspection and runtime logs; Context7 MCP for current official deployment configuration docs; Vercel `deployments-cicd`, `vercel-cli` and Functions skills for release guidance; existing Node/npm for local checks; isolated Playwright 1.58.2/Chromium for real signed-proxy browser requests without a dev server. The Vercel CLI was unavailable, so MCP handled deployment. Setup, purposes, dependencies and account configuration remain in [agent-setup.md](agent-setup.md); no new runtime tooling or provider plugin is required. No Supabase operation was needed.
+
+Previous Production deployment: `dpl_9rQiiRXaguKZE2CkQe9i1W3YhXUy`. A separately authorized rollback must account for that version restoring timed success and omitting Royal Express shipping. Preserve historical data and any pending demo attempts. Both Git index fingerprints matched before/after release: theme `77179c1aa988f2d1f22e02b3dbab5e18bbbe16b6c6e550e35cb715e05d89e217`, app `66da4aa6283aa2fe57f61349033af1fade84d8ef540d55f4879a3d7797b4e934`.
+
+Temporary local evidence: `/tmp/coco-demo-deployment-manifest.json`, `/tmp/coco-demo-deploy-evidence.json` and `/tmp/coco-demo-deploy-verify.log`. Do not commit source-upload payloads or browser state wholesale.
+
+---
+
 ## Active KBZPay simulation deployment — 6 November 2026
 
 The user authorized the simulation-first app deployment, additive database migration and unpublished Dev Preview upload. This active release supersedes the source-only note and older deployment targets below. UAT is implemented but remains inactive; no bank credentials or real gateway calls were used.

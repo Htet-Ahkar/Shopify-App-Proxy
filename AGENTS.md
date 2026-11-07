@@ -1,5 +1,27 @@
 # AGENTS.md
 
+> Deployed app update (7 November 2026): Production `dpl_EcvLQtav2nqZLGShSgk4GEZbkNtE` is READY. Demo submission/retry logs and removal of timed auto-success are verified through the signed Shopify proxy; Royal Express backend totals are included. All acceptance attempts were cancelled. No theme upload, migration, environment change or Git staging occurred. Required authenticated Vercel MCP, Context7, Vercel deployment/CLI/Functions skills, Node/npm and isolated Playwright setup remain documented below and in the [release record](docs/mock-checkout-deployment.md). No new plugin/dependency is required. This deployment supersedes earlier app source-only statements; frontend deployment remains separate.
+
+
+
+## Readable demo runtime logs — 7 November 2026
+
+The companion app emits one best-effort `[COCO DEMO]` info message after a fresh checkout/retry payment attempt commits. Use saved snapshot item titles/quantities, total, method, reference and attempt creation time in Asia/Bangkok; label retries separately. Do not log customer details, capabilities, idempotency keys, gateway credentials/identifiers, QR payloads or payment URLs. Quotes/polls/reloads/duplicate requests remain silent, and log failures cannot block payment initialization. No database/API/configuration/dependency change or deployment is included.
+
+Required tools are existing Node/npm for tests/typecheck/lint, Context7 MCP (`https://mcp.context7.com/mcp`, resolve the official Vercel library first) for documentation, and the Vercel plugin's `vercel:vercel-functions` skill for runtime logging guidance. Vercel dashboard access to the COCO project is needed to view logs after a separately authorized deployment; Vercel MCP/CLI is optional for inspection/deployment. Purposes, dependencies, client configuration, plugin installation, account setup and the nontechnical presentation steps are in [docs/agent-setup.md](docs/agent-setup.md) and [docs/demo-activity-logs.md](docs/demo-activity-logs.md). No new plugin/MCP service is required. Preserve both Git indexes and start no dev server.
+
+> Current local behavior (7 November 2026): simulated payments no longer auto-succeed after 10 seconds. Status and sweep keep them pending until cancellation or expiry. Existing successful records and verified KBZPay UAT evidence handling are unchanged. This source change is not deployed. Existing Node/npm tests and Shopify/Context7/browser tooling remain sufficient; no new plugin, MCP server, skill, configuration or dependency is needed. Setup: [agent tooling guide](docs/agent-setup.md) from the project root.
+
+
+
+## Royal Express checkout — 7 November 2026
+
+The current local quote flow accepts a Royal Express `shipping: { state, city }` selection. IDs are exact canonical Burmese names. Server-generated data in `app/lib/royal-express-data.server.ts` comes from `../../coco-original/royal-express.json`; regenerate from the theme with `npm run build:royal-express`, verify with `npm run check:royal-express`, and set `COCO_APP_PATH` for another app checkout location. Do not hand-edit generated rates. New snapshots freeze subtotal, shipping, total and destination; create validates delivery against that destination. Location-free quotes are preview-only. Retry/resume preserve saved historical totals, including snapshots without new metadata. No migration or deployment is included.
+
+Required tooling remains Node/npm and existing TypeScript/Prisma/React Router test/build dependencies; Context7 MCP (`https://mcp.context7.com/mcp`, resolve the official library ID before querying) for documentation; the Shopify plugin's `shopify:shopify` skill and Dev MCP/local CLI Theme Check for theme/API validation; and browser MCP or isolated Playwright 1.58.2/Chromium for theme acceptance. Purposes, installation, client configuration, dependencies and exact commands are in [docs/agent-setup.md](docs/agent-setup.md) and the [theme's Royal Express guide](../../coco-original/docs/royal-express-checkout.md). No new plugin, runtime npm dependency, database operation or payment credential is required. The installed API is 2025-10; the current toolkit no longer carries that schema, so nearest-supported-schema validation is supplemental only.
+
+Run app tests/typecheck/lint/build plus theme consistency, delivery-browser and QR suites. Fixtures start no server and make no live payment calls. Preserve both Git indexes/settings and keep this coordinated source release separate from deployment. For Burmese font updates preserve the theme's bundled OFL license.
+
 ## Active simulation rollout — 6 November 2026
 
 The user authorized and completed the Production app + additive migration + unpublished Dev Preview deployment. This supersedes the source-only restriction below for this release. Active app `dpl_2oumvMqVuBWk8ZQRiXvZd311VeLo` is READY in Singapore (`sin1`), using the current staged/working implementation, not an older Git snapshot. Production explicitly has `KBZPAY_MODE=simulation` and `KBZPAY_ACCEPT_NEW_PAYMENTS=true`; no UAT credentials/gateway calls. Prisma applied `20261106000000_kbzpay_uat` once to verified COCO project `jsiqibwdsvvhwhlvhisj`, preserving ownership/RLS. Exactly 33 checkout/locale files were uploaded to unpublished theme `187388330168`; the published theme and both themes' settings are unchanged. Both Git indexes are preserved.

@@ -5,8 +5,9 @@ export type PaymentMethod = typeof METHODS[number];
 export const TERMINAL = ["succeeded", "failed", "cancelled", "expired"] as const;
 export type PaymentStatus = "pending" | typeof TERMINAL[number];
 export type Snapshot = {
-  items: { variantId: string; title: string; quantity: number; price: string; total: string }[];
-  amount: string; currency: string; shipping: "0.00"; tax: "0.00";
+  items: { variantId: string; title: string; quantity: number; price: string; total: string; image?: string; productTitle?: string; variantTitle?: string }[];
+  amount: string; currency: string; subtotal?: string; shipping: string; tax: "0.00";
+  shippingSelection?: { company: string; state: string; city: string; zone: string };
 };
 export type Delivery = {
   name: string; email: string; phone: string; address: string;

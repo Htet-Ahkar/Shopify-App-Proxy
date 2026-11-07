@@ -28,11 +28,11 @@ function loader(mocks = {}, extra = {}) {
 const capability = 'a'.repeat(64);
 const context = {
   shop: 'coco.myshopify.com', customerId: null,
-  graphql: async (_query, { variables }) => Response.json({ data: { shop: { currencyCode: 'MMK' }, nodes: variables.ids.map(id => ({ id, title: 'M', price: '12345.67', product: { title: 'COCO Tee', status: 'ACTIVE' } })) } }),
+  graphql: async (_query, { variables }) => Response.json({ data: { shop: { currencyCode: 'MMK' }, nodes: variables.ids.map(id => ({ id, title: 'M', price: '12345.67', media: { nodes: [{ preview: { image: { url: 'https://cdn.shopify.com/test-variant.png' } } }] }, product: { title: 'COCO Tee', status: 'ACTIVE' } })) } }),
 };
-const shipping = { name: 'Demo Person', email: 'demo@example.test', phone: '+95912345678', address: 'Demo Street', city: 'Yangon', country: 'Myanmar' };
-function harness({ sampleCatalog = false, env = {}, transport } = {}) {
-  let now = Date.now(), queue = Promise.resolve();
+const shipping = { name: 'Demo Person', email: 'demo@example.test', phone: '+95912345678', address: 'Demo Street', region: 'ရန်ကုန်တိုင်းဒေသကြီး', city: 'ရန်ကုန်မြို့တွင်း', country: 'Myanmar' };
+function harness({ sampleCatalog = false, env = {}, transport, logFailure = false } = {}) {
+  let now = Date.now(), queue = Promise.resolve(), committedSubmissions = 0;
   const tables = { quotes: new Map(), checkouts: new Map(), attempts: new Map(), events: new Map() };
   class Clock extends Date {
     constructor(value) { super(arguments.length ? value : now); }
@@ -70,7 +70,11 @@ function harness({ sampleCatalog = false, env = {}, transport } = {}) {
     $transaction: work => {
       const result = queue.then(async () => {
         const saved = structuredClone(tables);
-        try { return await work(db); }
+        try {
+          const result = await work(db);
+          if (result?.fresh) committedSubmissions++;
+          return result;
+        }
         catch (error) {
           Object.keys(tables).forEach(key => {
             tables[key].clear();
@@ -83,11 +87,17 @@ function harness({ sampleCatalog = false, env = {}, transport } = {}) {
       return result;
     },
   };
+  const logs = [], logCommits = [];
+  const runtimeConsole = { info: message => {
+    if (logFailure) throw new Error("log output unavailable");
+    logs.push(message);
+    logCommits.push(committedSubmissions);
+  } };
   const runtimeEnv = { MOCK_CHECKOUT_SAMPLE_CATALOG_ENABLED: String(sampleCatalog), ...env };
-  const load = loader({ '../db.server': { __esModule: true, default: db } }, { Date: Clock, process: { env: runtimeEnv }, fetch: transport ?? (() => { throw new Error('No external payment calls allowed'); }) });
+  const load = loader({ '../db.server': { __esModule: true, default: db } }, { Date: Clock, console: runtimeConsole, process: { env: runtimeEnv }, fetch: transport ?? (() => { throw new Error('No external payment calls allowed'); }) });
   const service = load('lib/mock-checkout.server.ts');
-  const op = (operation, input = {}, owner = context) => service.checkoutOperation({ capability, operation, ...input }, owner);
-  return { ...service, op, tables, setEnv: changes => Object.assign(runtimeEnv, changes), advance: ms => { now += ms; } };
+  const op = (operation, input = {}, owner = context) => service.checkoutOperation({ capability, operation, ...(operation === 'quote' ? { shipping: { state: shipping.region, city: shipping.city } } : {}), ...input }, owner);
+  return { ...service, op, tables, logs, logCommits, setEnv: changes => Object.assign(runtimeEnv, changes), advance: ms => { now += ms; } };
 }
 async function begin(h, method = 'kbzpay', owner = context) {
   const quote = await h.op('quote', { lines: [{ variantId: '123', quantity: 2 }], amount: '1.00' }, owner);
@@ -97,7 +107,9 @@ async function begin(h, method = 'kbzpay', owner = context) {
 for (const method of ['kbzpay', 'mmqr']) {
   test(`${method}: sample instructions, authoritative totals, status and reload`, async () => {
     const h = harness(), { result, quote, input } = await begin(h, method);
-    assert.equal(quote.snapshot.amount, '24691.34');
+    assert.equal(quote.snapshot.amount, '27691.34');
+    assert.equal(quote.snapshot.items[0].image, 'https://cdn.shopify.com/test-variant.png');
+    assert.equal(result.snapshot.items[0].image, quote.snapshot.items[0].image);
     assert.equal(result.status, 'pending');
     assert.equal(result.attempt.initializationStatus, 'ready');
     assert.equal(result.attempt.providerId, `SIM-${result.attempt.id}`);
@@ -111,9 +123,11 @@ for (const method of ['kbzpay', 'mmqr']) {
       assert.equal(resumed.expiresAt, result.expiresAt);
       assert.equal(resumed.status, 'pending');
     }
-    h.advance(31000);
-    assert.equal((await h.op('status', { checkoutId: result.checkoutId, status: 'failed' })).status, 'succeeded');
-    assert.equal(h.tables.events.size, 1);
+    h.advance(10000);
+    assert.equal((await h.op('status', { checkoutId: result.checkoutId, status: 'succeeded' })).status, 'pending');
+    h.advance(21000);
+    assert.equal((await h.op('status', { checkoutId: result.checkoutId, status: 'failed' })).status, 'pending');
+    assert.equal(h.tables.events.size, 0);
   });
   test(`${method}: cancel and concurrent retry preserve history and deadline`, async () => {
     const h = harness(), { result } = await begin(h, method);
@@ -129,12 +143,12 @@ for (const method of ['kbzpay', 'mmqr']) {
     assert.equal(results[0].expiresAt, result.expiresAt);
     await assert.rejects(h.op('cancel', input), { code: 'attempt_unavailable' });
   });
-  test(`${method}: delayed polling recovers automatic success; late cancel cannot reopen it`, async () => {
+  test(`${method}: delayed polling expires pending demos; late cancel cannot reopen them`, async () => {
     const h = harness(), { result, input } = await begin(h, method); h.advance(900001);
     const expired = await h.op('status', { checkoutId: result.checkoutId });
-    assert.equal(expired.status, 'succeeded'); assert.equal(expired.attempt.instructions, null);
-    assert.equal((await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id })).status, 'succeeded');
-    assert.equal((await h.op('create', input)).status, 'succeeded');
+    assert.equal(expired.status, 'expired'); assert.equal(expired.attempt.instructions, null);
+    assert.equal((await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id })).status, 'expired');
+    assert.equal((await h.op('create', input)).status, 'expired');
     await assert.rejects(h.op('retry', { checkoutId: result.checkoutId, method, idempotencyKey: randomUUID() }), { code: 'retry_unavailable' });
   });
 }
@@ -182,7 +196,7 @@ test('historical terminal records remain unchanged and local sweep never deletes
   h.tables.checkouts.get(result.checkoutId).status = 'succeeded';
   const history = JSON.stringify([...h.tables.attempts]);
   const fresh = await begin(h, 'mmqr'); h.advance(900001); await h.sweep();
-  assert.equal(h.tables.attempts.get(fresh.result.attempt.id).status, 'succeeded');
+  assert.equal(h.tables.attempts.get(fresh.result.attempt.id).status, 'expired');
   assert.equal(JSON.stringify([[row.id, row]]), history);
   assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
   assert.equal(h.tables.quotes.size, 2);
@@ -228,11 +242,11 @@ test('sample catalog is gated and server-owned; it does not query Shopify invent
  await assert.rejects(disabled.op('quote', { source: 'sample' }), { code: 'sample_catalog_disabled' });
  const h = harness({ sampleCatalog: true });
  const quote = await h.op('quote', { source: 'sample', amount: '1.00', lines: [{ variantId: 'bad', quantity: 99 }] }, { ...context, graphql: () => { throw new Error('Sample must not query catalog'); } });
- assert.equal(quote.snapshot.amount, '35000.00');
+ assert.equal(quote.snapshot.amount, '38000.00');
  assert.equal(quote.snapshot.items[0].quantity, 1);
  const result = await h.op('create', { quoteId: quote.quoteId, idempotencyKey: randomUUID(), method: 'mmqr', delivery: shipping });
  assert.equal(result.attempt.initializationStatus, 'ready');
- assert.equal(result.snapshot.amount, '35000.00');
+ assert.equal(result.snapshot.amount, '38000.00');
 });
 
 const uatEnv = { KBZPAY_MODE: 'uat', KBZPAY_APP_ID: 'kpTest', KBZPAY_MERCH_CODE: '100001', KBZPAY_APP_KEY: 'test-only-key', KBZPAY_NOTIFY_URL: 'https://coco.test/payments/kbzpay/notify' };
@@ -258,7 +272,7 @@ function gatewayTransport({ loseCreate = false, badSignature = false, malformed 
       assert.match(reference, /^COCO_[a-f0-9]{32}$/);
       fields = { ...fields, prepay_id: `PREPAY_${reference}`, qrCode: '000201TEST_UAT_QR' };
     } else if (operation === 'closeorder') { state = closeState; if (loseClose) throw new TypeError('lost close response'); }
-    else fields = { ...fields, trade_status: state, total_amount: '24691.34', trans_currency: 'MMK', mm_order_id: state === 'PAY_SUCCESS' ? 'transaction-1' : '' };
+    else fields = { ...fields, trade_status: state, total_amount: '27691.34', trans_currency: 'MMK', mm_order_id: state === 'PAY_SUCCESS' ? 'transaction-1' : '' };
     if (malformed) return Response.json({ Response: null });
     const response = signed({ ...fields, ...overrides });
     if (badSignature) response.sign = '0'.repeat(64);
@@ -299,15 +313,16 @@ for (const method of ['kbzpay', 'mmqr']) {
     assert.equal(gateway.calls.filter(c => c.url.endsWith('/precreate')).length, 1);
   });
 }
-test('simulation succeeds at ten seconds and cancellation before then prevents automatic success', async () => {
+test('simulation remains pending at ten seconds and supports cancellation before or after', async () => {
   const h = harness(), first = await begin(h), second = await begin(h, 'mmqr');
   h.advance(9999);
   assert.equal((await h.op('status', { checkoutId: first.result.checkoutId })).status, 'pending');
   await h.op('cancel', { checkoutId: second.result.checkoutId, attemptId: second.result.attempt.id });
   h.advance(1);
-  assert.equal((await h.op('status', { checkoutId: first.result.checkoutId })).status, 'succeeded');
+  assert.equal((await h.op('status', { checkoutId: first.result.checkoutId })).status, 'pending');
   h.advance(10000);
   assert.equal((await h.op('status', { checkoutId: second.result.checkoutId })).status, 'cancelled');
+  assert.equal((await h.op('cancel', { checkoutId: first.result.checkoutId, attemptId: first.result.attempt.id })).status, 'cancelled');
 });
 test('lost precreate response remains recoverable and repeated create never dispatches again', async () => {
   const gateway = gatewayTransport({ loseCreate: true }), h = harness({ env: uatEnv, transport: gateway.transport });
@@ -411,7 +426,7 @@ test('stored mode survives configuration switch and old sample attempts cannot a
   const { result } = await begin(h);
   await assert.rejects(h.paymentNotification(callbackFor(h.tables.attempts.get(result.attempt.id))), { code: 'invalid_payment_signature' });
   h.setEnv({ KBZPAY_MODE: 'uat' }); h.advance(10000);
-  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'succeeded');
+  assert.equal((await h.op('status', { checkoutId: result.checkoutId })).status, 'pending');
   const old = harness(), legacy = await begin(old);
   Object.assign(old.tables.attempts.get(legacy.result.attempt.id), { gateway: null, merchantOrderId: null });
   old.advance(20000);
@@ -437,4 +452,106 @@ test('notification route acknowledges only after persistence, with the documente
     assert.equal(called, true); assert.equal(result.status, fails ? 503 : 200);
     if (!fails) assert.equal(await result.text(), 'success');
   }
+});
+
+
+test('Royal Express validates every destination and uses canonical zone prices', async () => {
+  const { default: data } = loader()('lib/royal-express-data.server.ts');
+  const { shippingQuote } = loader()('lib/royal-express.server.ts');
+  const base = { items: [{ total: '100.25' }], amount: '100.25', currency: 'MMK', shipping: '0.00', tax: '0.00' };
+  for (const state of data.states) for (const city of state.cities) {
+    const input = { state: state.id, city: city.id, price: '0.01', zone: 'fake' };
+    if (!city.available) { assert.throws(() => shippingQuote(base, input), { code: 'invalid_shipping' }); continue; }
+    const result = shippingQuote(base, input);
+    assert.equal(result.shipping, `${data.prices[city.zone]}.00`);
+    assert.equal(result.subtotal, '100.25');
+    assert.equal(result.amount, `${data.prices[city.zone] + 100}.25`);
+    assert.equal(result.shippingSelection.zone, city.zone);
+  }
+  for (const input of [null, {}, { state: 'unknown', city: 'unknown' }, { state: data.states[0].id, city: data.states[1].cities[0].id }]) {
+    assert.throws(() => shippingQuote(base, input), { code: 'invalid_shipping' });
+  }
+});
+test('checkout binds delivery to the quoted city and requires shipping for preview quotes', async () => {
+  const h = harness();
+  const quote = await h.op('quote', { lines: [{ variantId: '123', quantity: 2 }] });
+  const input = { quoteId: quote.quoteId, idempotencyKey: randomUUID(), method: 'mmqr', delivery: shipping };
+  for (const change of [{ city: 'other' }, { region: 'other' }, { country: 'other' }]) {
+    await assert.rejects(h.op('create', { ...input, delivery: { ...shipping, ...change } }), { code: 'shipping_changed' });
+  }
+  const preview = await h.op('quote', { lines: [{ variantId: '123', quantity: 2 }], shipping: undefined });
+  await assert.rejects(h.op('create', { ...input, quoteId: preview.quoteId }), { code: 'shipping_required' });
+  const result = await h.op('create', input);
+  assert.equal(result.snapshot.subtotal, '24691.34');
+  assert.equal(result.snapshot.shipping, '3000.00');
+  assert.equal(result.snapshot.amount, '27691.34');
+  assert.equal(h.tables.attempts.get(result.attempt.id).amount, '27691.34');
+});
+test('historical checkout retries preserve original totals without shipping metadata', async () => {
+  const h = harness(), { result } = await begin(h);
+  const checkout = h.tables.checkouts.get(result.checkoutId);
+  delete checkout.snapshot.shippingSelection;
+  delete checkout.snapshot.subtotal;
+  checkout.snapshot.amount = '24691.34';
+  checkout.snapshot.shipping = '0.00';
+  await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id });
+  const next = await h.op('retry', { checkoutId: result.checkoutId, idempotencyKey: randomUUID(), method: 'mmqr' });
+  assert.equal(next.snapshot.amount, '24691.34');
+  assert.equal(next.snapshot.shipping, '0.00');
+  assert.equal(h.tables.attempts.get(next.attempt.id).amount, '24691.34');
+});
+
+
+test('demo activity logs a readable line once per committed attempt, without customer or payment data', async () => {
+  const h = harness();
+  const quote = await h.op('quote', { lines: [{ variantId: '123', quantity: 2 }, { variantId: '456', quantity: 1 }] });
+  assert.equal(h.logs.length, 0);
+  const frozen = h.tables.quotes.get(quote.quoteId).snapshot;
+  frozen.items[0].title = 'Waffle Henley Shirt / Gray / M';
+  frozen.items[1].title = 'COCO\r\nTee\t/ Black / L\u2028Limited';
+  const input = { quoteId: quote.quoteId, idempotencyKey: randomUUID(), method: 'mmqr', delivery: shipping };
+  const [result, duplicate] = await Promise.all([h.op('create', input), h.op('create', input)]);
+  assert.equal(result.attempt.id, duplicate.attempt.id);
+  assert.equal(h.logs.length, 1);
+  assert.equal(h.logCommits[0], 1, "The new attempt must be committed before logging");
+  const row = h.tables.attempts.get(result.attempt.id);
+  const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).format(row.createdAt);
+  assert.equal(h.logs[0], `[COCO DEMO] Checkout submitted | ${time} UTC+07:00 | Waffle Henley Shirt / Gray / M × 2; COCO Tee / Black / L Limited × 1 | 40,037.01 MMK | MMQR | ${result.reference}`);
+  assert.doesNotMatch(h.logs[0], /[\r\n\t\u2028\u2029]/);
+  for (const sensitive of [shipping.name, shipping.email, shipping.phone, shipping.address, shipping.city, capability, input.idempotencyKey, result.attempt.instructions.qrPayload, result.attempt.providerId]) assert.equal(h.logs[0].includes(sensitive), false);
+  await h.op('create', input);
+  await h.op('status', { checkoutId: result.checkoutId });
+  await h.op('status', { idempotencyKey: input.idempotencyKey });
+  await h.op('cancel', { checkoutId: result.checkoutId, attemptId: result.attempt.id });
+  assert.equal(h.logs.length, 1);
+  const retry = { checkoutId: result.checkoutId, idempotencyKey: randomUUID(), method: 'kbzpay' };
+  h.advance(15000);
+  const attempts = await Promise.all([h.op('retry', retry), h.op('retry', retry)]);
+  assert.equal(attempts[0].attempt.id, attempts[1].attempt.id);
+  assert.equal(h.logs.length, 2);
+  assert.equal(h.logCommits[1], 2, "The retry must be committed before logging");
+  assert.match(h.logs[1], /^\[COCO DEMO\] Payment retry submitted \| /);
+  assert.ok(h.logs[1].endsWith(`| 40,037.01 MMK | KBZPay PWA | ${result.reference}`));
+  assert.equal(h.logs[1].includes(attempts[0].attempt.instructions.pwaUrl), false);
+});
+
+test('demo activity uses saved timestamps in Bangkok even across the UTC date boundary', () => {
+  const logs = [];
+  const { logDemoSubmission } = loader({}, { console: { info: line => logs.push(line) } })('lib/demo-activity.server.ts');
+  logDemoSubmission({ snapshot: { items: [{ title: 'Item / M', quantity: 1 }], amount: '68000.00', currency: 'MMK' }, reference: 'COCO-MOCK-TEST', method: 'kbzpay', createdAt: new Date('2026-11-07T18:30:00Z'), retry: false });
+  assert.equal(logs[0], '[COCO DEMO] Checkout submitted | 8 Nov 2026, 01:30:00 UTC+07:00 | Item / M × 1 | 68,000 MMK | KBZPay PWA | COCO-MOCK-TEST');
+});
+
+test('rejected requests and quotes emit no demo activity; unavailable logging cannot break checkout', async () => {
+  const h = harness();
+  await assert.rejects(h.op('quote', { shipping: { state: 'invalid', city: 'invalid' }, lines: [{ variantId: '123', quantity: 1 }] }), { code: 'invalid_shipping' });
+  const quote = await h.op('quote', { lines: [{ variantId: '123', quantity: 1 }] });
+  await assert.rejects(h.op('create', { quoteId: quote.quoteId, idempotencyKey: randomUUID(), method: 'mmqr', delivery: { ...shipping, city: 'invalid' } }), { code: 'shipping_changed' });
+  assert.equal(h.logs.length, 0);
+  assert.equal(h.tables.attempts.size, 0);
+  const failing = harness({ logFailure: true });
+  const { result } = await begin(failing);
+  assert.equal(result.status, 'pending');
+  assert.equal(result.attempt.initializationStatus, 'ready');
+  assert.equal(failing.tables.attempts.size, 1);
 });
